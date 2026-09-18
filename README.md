@@ -150,7 +150,7 @@ The projects should remain separate rather than copying GPL-licensed runtime cod
 ```text
 Rendering route                         Frame Generation backend
 ──────────────────────────────────      ─────────────────────────────
-Native DLSS / RenoDX               +    None
+Native DLSS / RenoDX (RTX 40)       +    RenoDX Ada MFG
 OptiScaler DLSS-NR                 +    RenoDX Ada MFG (RTX 40)
 DLSS 5 Feeder                      +    DLSSG SM86 (RTX 30)
                                         Standalone RTXMFG
@@ -199,7 +199,8 @@ The UI multiplier must be translated explicitly because the SM86 configuration c
    - Cache it as a separately versioned third-party component and retain the upstream notices.
 
 5. **Resolve proxy-DLL conflicts safely**
-   - Select the first usable slot in this order: `winmm.dll`, `dbghelp.dll`, `dinput8.dll`, then `version.dll`.
+   - Prefer the upstream tool-proxy set (`version.dll`, `winmm.dll`, `dbghelp.dll`, `dinput8.dll`) when slots are free; whichever the game loads becomes active, and journal every introduced file.
+   - If only one slot is deployed, require verified load-path evidence for that game and fail closed when it is unavailable.
    - Reject slots owned by the game, another DLSS 5 STUDIO payload, or an unknown third-party mod.
    - Reserve `dxgi.dll` and `d3d12.dll` as explicit expert fallbacks because they collide with common ReShade and OptiScaler deployments.
 
