@@ -1109,8 +1109,8 @@ fn deploy_with_framegen(
         }
         sm86_fg::configure_ini("", opts.mfg_multiplier)?;
         payloads.sm86.as_ref().ok_or("Verified SM86 payload is missing; download it first")?.verify()?;
-        sm86_fg::check_proxy_slots(&mod_root, &opts.game_dir)?;
-        previous_ada_addon = check_sm86_addon_conflicts(&opts.game_dir, &mod_root)?;
+        sm86_fg::check_proxy_slots(&mod_root, &opts.game_dir, payloads.rtxmfg_dll.as_deref())?;
+        previous_ada_addon = check_sm86_addon_conflicts(&opts.game_dir, &mod_root, payloads.renodx_mfgunlock_addon.as_deref())?;
         // User-imported add-ons must not reintroduce a second FG implementation
         // (or overwrite a reserved proxy) later in the rendering install.
         let state = crate::core::state::load_state();
@@ -1180,14 +1180,16 @@ fn rollback_sm86(game_dir: &Path, error: String) -> String {
     }
 }
 
-fn check_sm86_addon_conflicts(game_dir: &Path, mod_root: &Path) -> Result<Option<PathBuf>, String> {
+fn check_sm86_addon_conflicts(game_dir: &Path, mod_root: &Path, expected: Option<&Path>) -> Result<Option<PathBuf>, String> {
     let path = mod_root.join("renodx-mfgunlock.addon64");
     if !path.exists() { return Ok(None); }
     let previous = crate::core::journal::read_manifest(game_dir);
-    if previous.as_ref().map(|m| m.added.iter().any(|rel| game_dir.join(rel) == path)).unwrap_or(false) {
+    if previous.as_ref().map(|m| m.added.iter().any(|rel| game_dir.join(rel) == path)).unwrap_or(false)
+        && crate::core::sm86_fg::matches_payload(&path, expected)
+    {
         Ok(Some(path))
     } else {
-        Err("An unmanaged RenoDX MFG add-on conflicts with SM86. Remove it explicitly before installing.".into())
+        Err("An unmanaged or externally changed RenoDX MFG add-on conflicts with SM86. Resolve it explicitly before installing.".into())
     }
 }
 
@@ -2451,11 +2453,12 @@ mod tests {
         let game = sm86_test_dir("ada-conflict");
         let addon = game.join("renodx-mfgunlock.addon64");
         fs::write(&addon, b"ada addon").unwrap();
-        assert!(check_sm86_addon_conflicts(&game, &game).is_err());
+        assert!(check_sm86_addon_conflicts(&game, &game, Some(&addon)).is_err());
         save_manifest(&game, &ActiveManifest {
             added: vec!["renodx-mfgunlock.addon64".into()], ..Default::default()
         }).unwrap();
-        assert_eq!(check_sm86_addon_conflicts(&game, &game).unwrap(), Some(addon));
+        assert!(check_sm86_addon_conflicts(&game, &game, None).is_err());
+        assert_eq!(check_sm86_addon_conflicts(&game, &game, Some(&addon)).unwrap(), Some(addon.clone()));
         fs::remove_dir_all(game).unwrap();
     }
 

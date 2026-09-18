@@ -149,7 +149,7 @@ pub fn is_proxy(path: &Path) -> bool {
 /// Default deployment requires the complete coordinating tool-proxy set.
 /// This intentionally fails closed on conflicts instead of guessing which
 /// remaining name will load. Single-slot title profiles are deferred.
-pub fn check_proxy_slots(mod_root: &Path, game_dir: &Path) -> Result<(), String> {
+pub fn check_proxy_slots(mod_root: &Path, game_dir: &Path, previous_rtxmfg: Option<&Path>) -> Result<(), String> {
     let previous = journal::read_manifest(game_dir);
     for (name, _, _) in PROXIES {
         let path = mod_root.join(name);
@@ -176,12 +176,22 @@ pub fn check_proxy_slots(mod_root: &Path, game_dir: &Path) -> Result<(), String>
                             != Some(crate::core::framegen::FrameGenBackend::DlssgSm86)
                 })
                 .unwrap_or(false)
-            && crate::core::pe::is_optiscaler_or_proxy(&path);
+            && matches_payload(&path, previous_rtxmfg);
         if !managed || !metadata.is_file() || !(is_proxy(&path) || prior_rtxmfg) {
             return Err(format!("SM86 proxy slot is occupied: {}. Restore the previous installation or remove the conflicting mod explicitly; no files were changed.", path.display()));
         }
     }
     Ok(())
+}
+
+/// Ownership plus identical bytes is required to replace a legacy backend.
+/// Generic text markers must not authorize overwriting a different user's mod.
+pub(crate) fn matches_payload(path: &Path, expected: Option<&Path>) -> bool {
+    let Some(expected) = expected else { return false; };
+    match (downloader::compute_sha256(path), downloader::compute_sha256(expected)) {
+        (Ok(actual), Ok(expected)) => actual == expected,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -217,10 +227,27 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("version.dll");
         fs::write(&path, b"original game DLL Streamline").unwrap();
-        assert!(check_proxy_slots(&dir, &dir).is_err());
+        assert!(check_proxy_slots(&dir, &dir, None).is_err());
         assert!(!is_proxy(&path));
         assert_eq!(fs::read(&path).unwrap(), b"original game DLL Streamline");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn journal_ownership_does_not_authorize_replacing_a_different_proxy() {
+        let root = std::env::temp_dir().join(format!("sm86-owned-conflict-{}", std::process::id()));
+        let game = root.join("game");
+        fs::create_dir_all(&game).unwrap();
+        let expected = root.join("RTXMFG.dll");
+        fs::write(&expected, b"expected RTXMFG").unwrap();
+        fs::write(game.join("version.dll"), b"another Streamline mod").unwrap();
+        journal::save_manifest(&game, &journal::ActiveManifest {
+            route: "optiscaler".into(), added: vec!["version.dll".into()], ..Default::default()
+        }).unwrap();
+        assert!(check_proxy_slots(&game, &game, Some(&expected)).is_err());
+        fs::copy(&expected, game.join("version.dll")).unwrap();
+        assert!(check_proxy_slots(&game, &game, Some(&expected)).is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
