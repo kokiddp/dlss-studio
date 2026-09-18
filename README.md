@@ -12,7 +12,7 @@
 [![Binary Size](https://img.shields.io/badge/Portable%20Exe-5.9%20MB-success.svg)](#)
 [![License](https://img.shields.io/badge/license-MIT-purple.svg)](https://github.com/bookamp/dlss-studio/blob/main/LICENSE)
 
-**DLSS 5 STUDIO** is a ground-up pure Rust desktop utility inspired by the sleek UI design and layout of the original [DLSS 5 Swapper](https://github.com/rakanki911/DLSS5-Swapper). Engineered from scratch for extreme speed and minimal resource usage, it enables gamers to inject and upgrade modern DLSS features, Neural Reconstruction, and OptiScaler Pre-SR across their game libraries—with **3x/4x Multi-Frame Generation unlocked specifically for GeForce RTX 40-Series GPUs**.
+**DLSS 5 STUDIO** is a ground-up pure Rust desktop utility inspired by the sleek UI design and layout of the original [DLSS 5 Swapper](https://github.com/rakanki911/DLSS5-Swapper). It manages DLSS upgrades, Neural Reconstruction, and OptiScaler Pre-SR across game libraries, with **3x/4x Multi-Frame Generation unlocking for GeForce RTX 40-Series** and an **experimental DLSSG SM86 backend for compatible RTX 30-Series games**.
 
 Built with [Dioxus](https://dioxuslabs.com/) and direct Win32 APIs, it eliminates heavy web-wrapper and Electron stacks—launching in under 200ms and consuming under 20 MB of RAM.
 
@@ -24,11 +24,13 @@ Built with [Dioxus](https://dioxuslabs.com/) and direct Win32 APIs, it eliminate
 
 ## 🌟 Key Features
 
-### 1. ⚡ 4x Multi-Frame Generation (MFG) Unlock
+### 1. ⚡ Frame Generation for RTX 30 & RTX 40
 
 - **Bypass RTX 50-Series Driver Locks**: NVIDIA officially restricts 3x and 4x Multi-Frame Generation in drivers to RTX 50-Series hardware. DLSS 5 STUDIO unlocks 3x and 4x multipliers on GeForce RTX 40-Series GPUs.
 - **Native DLSS-G Interception**: Leverages RenoDX hook add-ons (`renodx-mfgunlock.addon64`) to intercept Streamline Frame Generation contracts on games with native Frame Generation code (`sl.dlss_g.dll`, `nvngx_dlssg.dll`).
 - **Honest Hardware & API Gating**: Automatically detects whether a game's engine has native Frame Generation or only DLSS Super Resolution (e.g. _Baldur's Gate 3_), and strictly gates MFG availability on DirectX 11 executables (`bg3_dx11.exe`) where Streamline Frame Generation is unsupported.
+- **Experimental RTX 30 Backend**: Opt-in DLSSG SM86 on Windows x64/D3D12 games with original DLSS-G integration. Choose a 2x, 3x, or 4x ceiling; the game controls the actual Frame Generation request. Native, Feeder, and OptiScaler routes share the same eligibility checks.
+- **Verified External Runtime**: Downloads a pinned SM86 version with SHA-256 verification and upstream notices. Installation checks all four proxy slots and rejects conflicts before changing game files. See [RTX 30 compatibility and setup](#-rtx-30-frame-generation).
 
 <p align="center">
   <img src="assets/preview-cyberpunk-mfg.png" alt="Cyberpunk 2077 4x Multi-Frame Generation Unlock" width="620">
@@ -38,7 +40,7 @@ Built with [Dioxus](https://dioxuslabs.com/) and direct Win32 APIs, it eliminate
 
 - **OptiScaler Neural Reconstruction Pipeline**: Route graphics through OptiScaler's open-source multi-vendor wrapper (`nvngx.dll` / `dxgi.dll`).
 - **Pre-SR Multipass Clarity**: Enables multi-pass neural reconstruction (`1x`, `2x`, or `3x` passes) for dramatic clarity, sharpness, and temporal stability enhancements.
-- **Universal RTXMFG Integration**: Pairs OptiScaler with standalone proxy hooks (`version.dll`) to allow simultaneous Frame Generation and Pre-SR multipass enhancements in supported 64-bit games.
+- **GPU-Aware Frame Generation**: Uses standalone RTXMFG on compatible RTX 40 configurations. On eligible RTX 30 configurations, SM86 supplies external Frame Generation while OptiScaler retains the game's Streamline stack; this combination still requires real-game validation.
 
 <p align="center">
   <img src="assets/preview-bg3-presr.png" alt="Baldur's Gate 3 OptiScaler Pre-SR Multipass Clarity" width="620">
@@ -67,17 +69,19 @@ Scans and organizes your games automatically without manual configuration:
 
 - **Atomic Rollback Journals**: Every modification automatically creates a snapshot in `_DLSS5_Backup/originals/` before touching any game files.
 - **Vanilla Backup Continuity**: Switching between routes carries forward the genuine unmodded game files through arbitrary successive swaps.
+- **SM86 Ownership Checks**: Journals the backend, proxies, configuration, and notices. Failed SM86 installs attempt rollback; restore and backend switches refuse to delete proxies replaced by another mod after a completed installation.
 - **Restore Originals**: Restores authentic vanilla binaries with a single click and archives the backup manifest.
 - **Clean Untracked Mods**: Purges leftover proxy DLLs (`dxgi.dll`, `OptiScaler.dll`, `ReShade64.dll`, `.addon64`) up to 4 directory levels deep without risking original game files.
 - **Process Guarding**: Inspects running processes via native Win32 `Toolhelp32` snapshots, blocking mod deployment or restoration if the game is running.
 - **Anti-Cheat Detection**: Detects EasyAntiCheat, BattlEye, and Vanguard, warning you before touching protected titles.
 
-### 6. 🌍 Complete Multilingual Localization (14 Languages)
+### 6. 🌍 Multilingual Localization (14 Languages)
 
 - **14 Supported Languages**: English, Deutsch (German), Español (Spanish), Français (French), Italiano (Italian), Português (Portuguese), Русский (Russian), 简体中文 (Simplified Chinese), 日本語 (Japanese), 한국어 (Korean), Polski (Polish), Türkçe (Turkish), العربية (Arabic with full RTL layout support), and हिन्दी (Hindi).
 - **Reactive Dynamic Switching**: Instantly switch languages anytime from the header selector or Settings. All views, sheets, specs, action badges, and tooltips update in real-time with zero app restart.
 - **Structured Activity Logging Engine**: Activity log entries use tokenized templates (`@{key|...}`), allowing the in-app terminal to dynamically translate logs into the selected language while keeping on-disk diagnostics (`dlss-studio.log`) in standard English for seamless GitHub issue reporting.
 - **Localized History & Tooltips**: Fully translated modification history tables, dynamic change counts (`0 replaced, 5 added`), action badges, and localized play button tooltips (`Launch {game}`).
+- **Experimental UI**: The new Frame Generation backend labels, SM86 instructions, and unsupported-state explanations currently use English.
 
 ### 7. 🪶 100% Pure Rust Performance
 
@@ -106,6 +110,8 @@ Scans and organizes your games automatically without manual configuration:
 
 ## 📦 Installation & Download
 
+The release links below point to the original upstream project and **do not include this fork's RTX 30 implementation**. To try this fork, build its source on Windows with `cargo build --release --locked`; the executable is written to `target/release/dlss-studio.exe`.
+
 ### Standalone Setup / Installer (Recommended)
 
 - Run **`dlss-studio-v<version>-setup.exe`** for standard Windows installation with Start Menu and Desktop shortcuts.
@@ -125,9 +131,10 @@ Scans and organizes your games automatically without manual configuration:
 3. **Choose Your Configuration**:
    - Select your **Rendering backend** (`ReShade` or `OptiScaler DLSS-NR`).
    - If using ReShade, select your **Installation route** (`Native DLSS (RenoDX)` or `DLSS 5 Feeder`).
-   - If supported by your hardware and game engine, toggle **`Pre-SR Multipass`** (`1x`, `2x`, or `3x` passes) or **`Unlock 4x Multi-Frame Generation`**.
+   - If supported by your hardware and game engine, toggle **`Pre-SR Multipass`** (`1x`, `2x`, or `3x` passes) or **`Frame Generation`**. The FG control identifies the selected backend and explains unsupported configurations.
+   - For RTX 30, opt into **`DLSSG SM86 (experimental, RTX 30)`** and choose a **2x, 3x, or 4x ceiling**. The installer downloads and verifies the runtime when selected.
 4. **Click "Install DLSS 5"** (ensuring the game is closed).
-5. **Launch Your Game**: Launch via the "Launch Game" button or your regular launcher. To revert at any time, click **"Restore originals"**.
+5. **Launch Your Game**: Launch via the "Launch Game" button or your regular launcher. For SM86, enable DLSS Frame Generation in the game's own settings. To revert, close the game and click **"Restore originals"**.
 
 ---
 
@@ -139,96 +146,46 @@ Scans and organizes your games automatically without manual configuration:
 
 ---
 
-## 🧭 Roadmap: RTX 30-Series Frame Generation
+## 🧪 RTX 30 Frame Generation
 
-> **Status: experimental implementation, hardware validation pending.** This fork includes an opt-in RTX 30 backend for Windows x64, DirectX 12 games that already include a native DLSS-G/Streamline Frame Generation integration. See [RTX 30 setup, safety rules, and validation](docs/RTX30-SM86.md). The upstream release links above do not include this fork's changes.
+This fork implements [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) as an optional external backend. **It remains experimental: automated deployment tests pass, but physical RTX 30 hardware and real-game behavior have not been validated.**
 
-The proposed integration uses [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) as an external Frame Generation backend for GeForce RTX 30-Series (Ampere) GPUs. DLSS 5 STUDIO would acquire, configure, deploy, detect, and remove the compatibility runtime while retaining its existing one-click backup and restore guarantees.
+### Compatibility and backend selection
 
-### Architecture
+| GPU and game | Rendering route | Managed Frame Generation backend |
+| :--- | :--- | :--- |
+| RTX 30, x64, D3D12, original native DLSS-G | Native DLSS / RenoDX, Feeder, or OptiScaler | DLSSG SM86, with 2x/3x/4x ceilings |
+| RTX 40, supported game | Native DLSS / RenoDX or Feeder | RenoDX Ada MFG |
+| RTX 40, supported game | OptiScaler | Standalone RTXMFG |
+| RTX 30 with DX11, Vulkan, 32-bit, or no native DLSS-G | Any | SM86 unavailable |
+| RTX 20, RTX 50, or unknown GPU | Any | Managed FG unlock unavailable |
 
-The projects should remain separate rather than copying GPL-licensed runtime code into this MIT repository. DLSS 5 STUDIO remains the Rust orchestrator; `dlssg_for_sm86` remains an independently versioned third-party payload.
+SM86 requires the game's original `nvngx_dlssg.dll` or `sl.dlss_g.dll`. Super Resolution's `sl.dlss.dll` and files added by Studio do not establish native FG support. Choosing Feeder does not remove this requirement. Unknown or ambiguous GPU/API detection leaves the feature unavailable.
 
-Rendering routes and Frame Generation backends are separate choices. Native DLSS / RenoDX and Feeder retain the RenoDX Ada backend for RTX 40; OptiScaler retains standalone RTXMFG. On a qualifying RTX 30 game, each rendering route can instead select DLSSG SM86. Choosing Feeder does not remove the requirement for the game's original DLSS-G integration.
+The 2x/3x/4x UI ceilings map to `MaxGeneratedFrames=1/2/3`. Studio configures optimized mode, the automatic compatibility preset, bundled runtime, and ordinary logging while preserving unrelated INI settings. A ceiling does not force the game to request that multiplier.
 
-A centralized resolver should choose a backend from the detected GPU architecture, game API, bitness, native FG capability, selected rendering route, and available proxy-DLL slot:
+### Installation, conflicts, and restore
 
-```rust
-pub enum FrameGenBackend {
-    None,
-    RenoDxAda,
-    DlssgSm86,
-    RtxMfg,
-}
-```
+- SM86 0.3.3 is pinned to upstream commit `5e79459c2d521f8c3276ce9ee02342c0e2686982`. Each DLL and the upstream notices are SHA-256 verified in a separate versioned cache.
+- Installation requires the complete, distinct upstream proxy set: `version.dll`, `winmm.dll`, `dbghelp.dll`, and `dinput8.dll`. Foreign files block installation. A previous Studio-managed backend may be replaced only when its bytes match the expected payload.
+- Only one managed FG backend is installed at a time. SM86 does not use `dxgi.dll` or `d3d12.dll` as its proxy.
+- Backend changes, reinstallations, and **Restore originals** retain original backups and track introduced files. If a completed installation's SM86 proxy has changed externally, resolve the conflict before switching or restoring.
+- Runtime-created logs and the upstream user-level bundle cache are retained; Studio does not own those directories.
 
-### Initial compatibility target
+### Validation and limitations
 
-| GPU / game path | Planned result |
-| :--- | :--- |
-| RTX 30 + x64 + D3D12 + native DLSS-G/Streamline FG | DLSSG SM86 backend; 2x, 3x, or 4x UI multiplier |
-| RTX 30 + OptiScaler + native DLSS-G | Supported only when a non-conflicting proxy slot is available |
-| RTX 30 + DX11, Vulkan, 32-bit, or no native FG integration | Unsupported in the first milestone |
-| RTX 40 + supported native FG | Existing RenoDX Ada MFG path remains unchanged |
+Windows CI checks all targets, runs unit and regression tests, and separately downloads the verified payload to exercise installation, reinstallation, rendering/backend switches, conflict handling, and restoration in a synthetic game directory. The test copies DLLs as data and does not execute them.
 
-The UI multiplier must be translated explicitly because the SM86 configuration counts generated frames: `2x → 1`, `3x → 2`, and `4x → 3` for `MaxGeneratedFrames`.
+Real-game FG behavior, image quality, performance, and proxy loading still need physical RTX 30 validation, with RTX 40 regression testing also pending. Single-proxy profiles, DX11, Vulkan, RTX 20, 6x, graphics-proxy fallbacks, and advanced tuning are not implemented.
 
-### Implementation plan
+See [RTX 30 setup and validation](docs/RTX30-SM86.md) for detailed instructions, recovery behavior, and the manual test matrix.
 
-1. **Generalize GPU detection**
-   - Replace RTX-40-only gating with `NvidiaArch` detection for Turing, Ampere, Ada, Blackwell, and unknown devices.
-   - Keep the first release intentionally limited to Ampere even if the upstream runtime can support additional architectures.
+### Third-party runtime
 
-2. **Centralize Frame Generation capability resolution**
-   - Add `FrameGenBackend` and a single `framegen_capability(game, gpu, route)` decision path used by both the UI and deployer.
-   - Require NVIDIA Ampere, Windows x64, D3D12, and detected native DLSS-G/Streamline FG for the initial SM86 path.
-
-3. **Add an SM86 component module**
-   - Create `src/core/sm86_fg.rs` for payload metadata, configuration generation, and UI-multiplier translation.
-   - Start with conservative settings: optimized mode enabled, automatic compatibility preset, bundled runtime, and ordinary logging.
-   - Keep experimental or artifact-prone upstream diagnostics out of the initial UI.
-
-4. **Acquire and verify a pinned payload**
-   - Extend the downloader and `PayloadBundle` with a pinned `dlssg_for_sm86` release or commit and expected SHA-256 hashes.
-   - Never download mutable files from `main`.
-   - Cache it as a separately versioned third-party component and retain the upstream notices.
-
-5. **Resolve proxy-DLL conflicts safely**
-   - Prefer the upstream tool-proxy set (`version.dll`, `winmm.dll`, `dbghelp.dll`, `dinput8.dll`) when slots are free; whichever the game loads becomes active, and journal every introduced file.
-   - The first implementation requires the complete four-proxy set and fails before installation when a slot has a foreign owner. A journal-owned previous RTXMFG proxy can be replaced during a backend switch.
-   - Single-slot deployment remains deferred: it requires verified load-path evidence for that game and must fail closed when it is unavailable.
-   - Reject slots owned by the game, another DLSS 5 STUDIO payload, or an unknown third-party mod.
-   - Reserve `dxgi.dll` and `d3d12.dll` as explicit expert fallbacks because they collide with common ReShade and OptiScaler deployments.
-
-6. **Integrate transactional deployment and restore**
-   - Deploy the selected proxy and generated `dlssg_sm86.ini` through the existing journaled installer.
-   - Record the chosen Frame Generation backend and proxy name in the active manifest.
-   - Ensure route changes, backend changes, failed installs, and “Restore originals” all remove introduced files and restore replaced files correctly.
-
-7. **Recognize SM86 payloads explicitly**
-   - Add a strong PE/content recognizer for the SM86 proxy rather than relying on generic Streamline markers.
-   - Include recognized SM86 files in safe cleanup and dirty-install detection.
-
-8. **Expose backend-aware UI**
-   - Present one Frame Generation control while showing the implementation selected for the current GPU and game.
-   - Explain unsupported states instead of silently hiding the feature.
-   - Preserve all current RTX 40 behavior.
-
-9. **Test before widening support**
-   - Add unit tests for architecture detection, capability gating, multiplier conversion, INI generation, proxy selection, conflict rejection, and journal restoration.
-   - Validate the end-to-end path first on representative native DLSS-G D3D12 titles such as Cyberpunk 2077, Black Myth: Wukong, and Final Fantasy VII Rebirth.
-
-### First milestone definition of done
-
-An RTX 30-Series user can select a compatible 64-bit D3D12 game with native DLSS-G, enable 2x/3x/4x Frame Generation through the DLSSG SM86 backend, switch routes safely, and restore the untouched original game files with one click.
-
-DX11, Vulkan, RTX 20-Series exposure, 6x Dynamic MFG, render-path proxy fallbacks, and advanced SM86 tuning are explicitly deferred until this narrow path is stable.
-
-### Licensing and distribution boundary
-
-`dlssg_for_sm86` should be treated as an external third-party runtime, not source-merged into DLSS 5 STUDIO. Before redistribution, the implementation must verify the licenses and redistribution terms for the upstream project, its bundled NVIDIA runtime, and any extracted or modified NVIDIA resources. Required notices should be shipped verbatim, and NVIDIA-derived payloads should not be committed to this repository unless redistribution is confirmed.
+Studio downloads SM86 independently and retains upstream third-party notices verbatim. No SM86 DLLs, NVIDIA runtime, or upstream GPL source are committed to this repository or bundled into Studio's executable. Packaging or redistributing third-party runtime resources requires review of the applicable upstream and NVIDIA terms.
 
 ---
+
 ## 📚 Acknowledgements & Third-Party Components
 
 - **DLSSG for SM86**: Experimental external DLSS-G compatibility runtime for RTX 30-Series in this fork ([sdli1995/dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86)). Downloaded from a pinned upstream commit with its third-party notices; not bundled into Studio's executable.
