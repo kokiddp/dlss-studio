@@ -3145,7 +3145,7 @@ pub fn App() -> Element {
                                                         }
                                                     }
                                                     if is_sm86 {
-                                                        div { class: "d", "Experimental RTX 30 support. Downloads the third-party DLSSG SM86 0.3.3 runtime and notices from upstream. The multiplier is a ceiling: enable DLSS Frame Generation in the game. Requires four free proxy slots; real-game compatibility is not guaranteed. Runtime and NVIDIA resource terms remain upstream's responsibility." }
+                                                        div { class: "d", "Experimental RTX 30 support. Downloads the third-party DLSSG SM86 0.3.3 runtime and notices from upstream. The multiplier is a ceiling: enable DLSS Frame Generation in the game. Requires four free proxy slots; real-game compatibility is not guaranteed. Review upstream and NVIDIA resource terms before use or redistribution." }
                                                     } else {
                                                         div { class: "d", "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_desc\")}" }
                                                     }

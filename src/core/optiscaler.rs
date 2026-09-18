@@ -916,6 +916,7 @@ fn carry_forward_existing_backups(
         // configuration and notices. Restore must not lose them on reinstall.
         manifest.added = prev.added.clone();
         manifest.added_dirs = prev.added_dirs.clone();
+        manifest.frame_gen_proxies = prev.frame_gen_proxies.clone();
         let prev_bdir = crate::core::journal::backup_dir(game_dir);
         for item in prev.replaced {
             let old_backup_file = if let Some(ref p) = prev.backup_prefix {
@@ -1086,7 +1087,13 @@ fn deploy_with_framegen(
     let mod_root = crate::core::compatibility::managed_mod_root(&opts.game_dir, Some(&opts.exe_path))
         .unwrap_or_else(|| opts.exe_path.parent().unwrap_or(&opts.game_dir).to_path_buf());
     crate::core::install_guards::assert_game_closed(&opts.game_dir, Some(&opts.exe_path))?;
+    let mut previous_ada_addon = None;
     if sm86 {
+        let game_root = fs::canonicalize(&opts.game_dir).map_err(|e| e.to_string())?;
+        let proxy_root = fs::canonicalize(&mod_root).map_err(|e| e.to_string())?;
+        if !proxy_root.starts_with(&game_root) {
+            return Err("SM86 proxy directory must resolve inside the game directory".into());
+        }
         let gpu = opts.frame_gen_gpu.as_ref().ok_or("SM86 requires detected GPU information")?;
         let mut game = crate::core::scan::scan_game_directory(&opts.game_dir).ok_or("Cannot verify native DLSS-G integration")?;
         game.exe_path = opts.exe_path.clone();
@@ -1099,6 +1106,16 @@ fn deploy_with_framegen(
         sm86_fg::configure_ini("", opts.mfg_multiplier)?;
         payloads.sm86.as_ref().ok_or("Verified SM86 payload is missing; download it first")?.verify()?;
         sm86_fg::check_proxy_slots(&mod_root, &opts.game_dir)?;
+        previous_ada_addon = check_sm86_addon_conflicts(&opts.game_dir, &mod_root)?;
+        // User-imported add-ons must not reintroduce a second FG implementation
+        // (or overwrite a reserved proxy) later in the rendering install.
+        let state = crate::core::state::load_state();
+        for custom in state.addon_files.iter().filter(|a| state.addons.contains(&a.path)) {
+            let name = Path::new(&custom.path).file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.eq_ignore_ascii_case("renodx-mfgunlock.addon64") || sm86_fg::PROXIES.iter().any(|p| p.0.eq_ignore_ascii_case(name)) {
+                return Err(format!("Disable conflicting custom add-on before using SM86: {name}"));
+            }
+        }
         // Avoid following an externally controlled INI/notice symlink.
         for name in [sm86_fg::INI_NAME, sm86_fg::NOTICE_NAME] {
             let path = mod_root.join(name);
@@ -1110,6 +1127,9 @@ fn deploy_with_framegen(
     let previous_ini = if sm86 && mod_root.join(sm86_fg::INI_NAME).exists() {
         Some(fs::read_to_string(mod_root.join(sm86_fg::INI_NAME)).map_err(|e| e.to_string())?)
     } else { None };
+    if let Some(addon) = previous_ada_addon {
+        fs::remove_file(addon).map_err(|e| format!("Cannot remove previous managed Ada MFG add-on: {e}"))?;
+    }
     // Preserve the INI on same-backend reinstalls. Backend switches remove only
     // manifest-owned, hash-recognized proxies and restore any original config.
     if !sm86 { remove_managed_sm86(&opts.game_dir)?; }
@@ -1129,16 +1149,40 @@ fn deploy_with_framegen(
         }
         result.log_lines.push(format!("[SM86] Enabled {}x ceiling; select DLSS Frame Generation in the game. Actual multiplier is game-dependent.", opts.mfg_multiplier));
     }
-    save_manifest(&opts.game_dir, &manifest).map_err(|e| e.to_string())?;
+    if let Err(error) = save_manifest(&opts.game_dir, &manifest) {
+        return Err(if sm86 { rollback_sm86(&opts.game_dir, error.to_string()) } else { error.to_string() });
+    }
     result.replaced = manifest.replaced.len();
     result.added = manifest.added.len();
+    if sm86 {
+        let _ = append_history(&HistoryRow {
+            date: crate::core::journal::now_timestamp_str(),
+            dir: opts.game_dir.to_string_lossy().to_string(),
+            game_name: opts.game_name.clone(), action: "install_sm86".into(),
+            replaced: result.replaced, added: result.added,
+        });
+    }
     Ok(result)
 }
 
 fn rollback_sm86(game_dir: &Path, error: String) -> String {
+    if crate::core::journal::read_manifest(game_dir).is_none() {
+        return format!("{error}. No tracked installation to roll back.");
+    }
     match crate::core::journal::restore_game(game_dir) {
         Ok(_) => format!("{error}. Installation rolled back; original files restored."),
         Err(rollback) => format!("{error}. Rollback failed: {rollback}. Keep _DLSS5_Backup and use Restore originals before retrying."),
+    }
+}
+
+fn check_sm86_addon_conflicts(game_dir: &Path, mod_root: &Path) -> Result<Option<PathBuf>, String> {
+    let path = mod_root.join("renodx-mfgunlock.addon64");
+    if !path.exists() { return Ok(None); }
+    let previous = crate::core::journal::read_manifest(game_dir);
+    if previous.as_ref().map(|m| m.added.iter().any(|rel| game_dir.join(rel) == path)).unwrap_or(false) {
+        Ok(Some(path))
+    } else {
+        Err("An unmanaged RenoDX MFG add-on conflicts with SM86. Remove it explicitly before installing.".into())
     }
 }
 
@@ -1234,7 +1278,7 @@ fn deploy_optiscaler_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Re
         .unwrap_or_else(|_| opts.exe_path.file_name().unwrap_or_default().to_string_lossy().to_string());
 
     let mut manifest = ActiveManifest {
-        frame_gen_backend: None,
+        frame_gen_backend: opts.frame_gen_backend,
         frame_gen_proxies: Vec::new(),
         version: 1,
         date: crate::core::journal::now_timestamp_str(),
@@ -1368,6 +1412,7 @@ fn deploy_optiscaler_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Re
     let replaced = manifest.replaced.len();
     let added = manifest.added.len();
 
+    if opts.frame_gen_backend != Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
     let _ = append_history(&HistoryRow {
         date: crate::core::journal::now_timestamp_str(),
         dir: opts.game_dir.to_string_lossy().to_string(),
@@ -1376,6 +1421,7 @@ fn deploy_optiscaler_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Re
         replaced,
         added,
     });
+    }
 
     log.push(format!("[COMPLETE] Successfully installed OptiScaler Pre-SR (Passes: {}, MFG: {})! {} files replaced, {} added.",
         opts.passes,
@@ -1422,7 +1468,7 @@ fn deploy_native_dlss5_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> 
         .unwrap_or_else(|_| opts.exe_path.file_name().unwrap_or_default().to_string_lossy().to_string());
 
     let mut manifest = ActiveManifest {
-        frame_gen_backend: None,
+        frame_gen_backend: opts.frame_gen_backend,
         frame_gen_proxies: Vec::new(),
         version: 1,
         date: crate::core::journal::now_timestamp_str(),
@@ -1557,6 +1603,7 @@ fn deploy_native_dlss5_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> 
     let replaced = manifest.replaced.len();
     let added = manifest.added.len();
 
+    if opts.frame_gen_backend != Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
     let _ = append_history(&HistoryRow {
         date: crate::core::journal::now_timestamp_str(),
         dir: opts.game_dir.to_string_lossy().to_string(),
@@ -1565,6 +1612,7 @@ fn deploy_native_dlss5_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> 
         replaced,
         added,
     });
+    }
 
     let mfg_desc = if opts.mfg_unlock {
         format!("{}x companion add-on", opts.mfg_multiplier)
@@ -1820,7 +1868,7 @@ fn deploy_feeder_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result
     let bitness = crate::core::pe::inspect_pe(&opts.exe_path).map(|p| p.bitness).unwrap_or(64);
 
     let mut manifest = ActiveManifest {
-        frame_gen_backend: None,
+        frame_gen_backend: opts.frame_gen_backend,
         frame_gen_proxies: Vec::new(),
         version: 1,
         date: crate::core::journal::now_timestamp_str(),
@@ -2206,6 +2254,7 @@ fn deploy_feeder_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result
     let replaced = manifest.replaced.len();
     let added = manifest.added.len();
 
+    if opts.frame_gen_backend != Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
     let _ = append_history(&HistoryRow {
         date: crate::core::journal::now_timestamp_str(),
         dir: opts.game_dir.to_string_lossy().to_string(),
@@ -2214,6 +2263,7 @@ fn deploy_feeder_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result
         replaced,
         added,
     });
+    }
 
     let mfg_desc = if opts.mfg_unlock {
         format!("{}x Streamline Feeder companion add-on", opts.mfg_multiplier)
@@ -2349,6 +2399,7 @@ mod tests {
         fs::write(old_backup.join("dlssg_sm86.ini"), b"original config").unwrap();
         let old = ActiveManifest {
             backup_prefix: Some("originals/first".into()),
+            frame_gen_proxies: vec!["dbghelp.dll".into()],
             added: vec!["dbghelp.dll".into(), "dlssg_sm86_THIRD_PARTY_NOTICES.txt".into()],
             replaced: vec![ManifestItem { rel: "dlssg_sm86.ini".into(), ..Default::default() }],
             ..Default::default()
@@ -2358,6 +2409,7 @@ mod tests {
         let next_backup = game.join("_DLSS5_Backup/originals/second");
         carry_forward_existing_backups(&game, &next_backup, &mut next, &mut Vec::new()).unwrap();
         assert_eq!(next.added, old.added);
+        assert_eq!(next.frame_gen_proxies, old.frame_gen_proxies);
         assert_eq!(next.replaced.len(), 1);
         assert_eq!(fs::read(next_backup.join("dlssg_sm86.ini")).unwrap(), b"original config");
         fs::remove_dir_all(game).unwrap();
@@ -2382,6 +2434,59 @@ mod tests {
         let manifest: ActiveManifest = serde_json::from_str(r#"{"route":"native","version":1}"#).unwrap();
         assert_eq!(manifest.frame_gen_backend, None);
         assert!(manifest.frame_gen_proxies.is_empty());
+    }
+
+    #[test]
+    fn sm86_switch_removes_only_a_manifest_owned_ada_addon() {
+        let game = sm86_test_dir("ada-conflict");
+        let addon = game.join("renodx-mfgunlock.addon64");
+        fs::write(&addon, b"ada addon").unwrap();
+        assert!(check_sm86_addon_conflicts(&game, &game).is_err());
+        save_manifest(&game, &ActiveManifest {
+            added: vec!["renodx-mfgunlock.addon64".into()], ..Default::default()
+        }).unwrap();
+        assert_eq!(check_sm86_addon_conflicts(&game, &game).unwrap(), Some(addon));
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn sm86_disabling_restores_original_config_and_clears_metadata() {
+        use crate::core::{framegen::FrameGenBackend, sm86_fg};
+        let game = sm86_test_dir("disable");
+        let backup = game.join("_DLSS5_Backup/originals/first");
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join(sm86_fg::INI_NAME), b"user original").unwrap();
+        fs::write(game.join(sm86_fg::INI_NAME), b"managed ini").unwrap();
+        fs::write(game.join(sm86_fg::NOTICE_NAME), b"managed notices").unwrap();
+        save_manifest(&game, &ActiveManifest {
+            frame_gen_backend: Some(FrameGenBackend::DlssgSm86),
+            frame_gen_proxies: vec!["version.dll".into(), "dbghelp.dll".into()],
+            added: vec!["version.dll".into(), "dbghelp.dll".into(), sm86_fg::NOTICE_NAME.into()],
+            replaced: vec![ManifestItem { rel: sm86_fg::INI_NAME.into(), ..Default::default() }],
+            backup_prefix: Some("originals/first".into()), ..Default::default()
+        }).unwrap();
+        remove_managed_sm86(&game).unwrap();
+        let manifest = crate::core::journal::read_manifest(&game).unwrap();
+        assert_eq!(manifest.frame_gen_backend, Some(FrameGenBackend::None));
+        assert!(manifest.frame_gen_proxies.is_empty());
+        assert!(manifest.added.is_empty());
+        assert_eq!(fs::read(game.join(sm86_fg::INI_NAME)).unwrap(), b"user original");
+        assert!(!game.join(sm86_fg::NOTICE_NAME).exists());
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn restore_missing_original_keeps_active_journal_and_current_file() {
+        let game = sm86_test_dir("missing-original");
+        fs::write(game.join("original.cfg"), b"current").unwrap();
+        save_manifest(&game, &ActiveManifest {
+            replaced: vec![ManifestItem { rel: "original.cfg".into(), ..Default::default() }],
+            backup_prefix: Some("originals/missing".into()), ..Default::default()
+        }).unwrap();
+        assert!(crate::core::journal::restore_game(&game).is_err());
+        assert!(crate::core::journal::read_manifest(&game).is_some());
+        assert_eq!(fs::read(game.join("original.cfg")).unwrap(), b"current");
+        fs::remove_dir_all(game).unwrap();
     }
 
     pub use crate::core::state::STATE_TEST_MUTEX;

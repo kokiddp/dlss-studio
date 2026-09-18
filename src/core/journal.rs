@@ -224,8 +224,9 @@ pub fn resolve_target_path(game_dir: &Path, rel: &str) -> PathBuf {
 }
 
 pub fn is_proxy_hook(path: &Path) -> bool {
-    if crate::core::pe::is_dlssg_sm86_proxy(path) { return true; }
     let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+    if crate::core::sm86_fg::PROXIES.iter().any(|p| p.0 == fname)
+        && crate::core::pe::is_dlssg_sm86_proxy(path) { return true; }
     let hook_names = ["dxgi.dll", "winmm.dll", "d3d12.dll", "d3d11.dll", "d3d9.dll", "d3d8.dll", "opengl32.dll", "dinput8.dll", "version.dll"];
     if hook_names.contains(&fname.as_str()) {
         return crate::core::pe::is_optiscaler_or_proxy(path) || crate::core::pe::is_reshade_dll(path).0;
@@ -313,13 +314,16 @@ pub fn clean_untracked_mods_with_exe(game_dir: &Path, exe_path: Option<&Path>) -
     }
 
     for dir in unique_dirs {
+        let has_sm86 = crate::core::sm86_fg::PROXIES.iter()
+            .any(|p| crate::core::pe::is_dlssg_sm86_proxy(&dir.join(p.0)));
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 let fname = entry.file_name().to_string_lossy().to_string();
                 let lower = fname.to_lowercase();
 
-                if lower == "optiscaler.ini"
+                if (has_sm86 && (lower == crate::core::sm86_fg::INI_NAME || lower == crate::core::sm86_fg::NOTICE_NAME.to_ascii_lowercase()))
+                    || lower == "optiscaler.ini"
                     || lower == "optiscaler.log"
                     || lower == "optiscaler.dll"
                     || lower == "reshade.ini"
@@ -366,7 +370,7 @@ pub fn clean_untracked_mods_with_exe(game_dir: &Path, exe_path: Option<&Path>) -
                         return Err(std::io::Error::new(e.kind(), format!("Failed to remove reshade-shaders directory: {}. Is the game running?", e)));
                     }
                     removed.push("reshade-shaders/".to_string());
-                } else if lower == "dxgi.dll" || lower == "winmm.dll" || lower == "d3d12.dll" || lower == "d3d11.dll" || lower == "d3d9.dll" || lower == "d3d8.dll" || lower == "dinput8.dll" || lower == "version.dll" {
+                } else if lower == "dxgi.dll" || lower == "winmm.dll" || lower == "dbghelp.dll" || lower == "d3d12.dll" || lower == "d3d11.dll" || lower == "d3d9.dll" || lower == "d3d8.dll" || lower == "dinput8.dll" || lower == "version.dll" {
                     if is_proxy_hook(&path) {
                         match fs::remove_file(&path) {
                             Ok(_) => {
@@ -421,6 +425,15 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
     }
 
     let bdir = backup_dir(game_dir);
+
+    // A missing original is an error, not a successful restore. Leave the
+    // active manifest intact so recovery can be retried.
+    for item in &manifest.replaced {
+        let original = bdir.join(manifest.backup_prefix.as_deref().unwrap_or("")).join(&item.rel);
+        if !original.is_file() {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Original backup missing: {}", original.display())));
+        }
+    }
 
     for item in &manifest.replaced {
         let backup_file = if let Some(ref p) = manifest.backup_prefix {

@@ -2,8 +2,6 @@ name: Windows PR checks
 
 on:
   pull_request:
-  push:
-    branches: [feat/rtx30-sm86-frame-generation]
 
 permissions:
   contents: read
