@@ -958,7 +958,7 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
             } else if (file_name == "nvngx_dlss.dll" || file_name == "_nvngx.dll" || file_name == "nvngx.dll" || file_name == "nvngx_dlssnr.dll") && !is_inside_mod_dir {
                 let pe_opt = inspect_pe(path);
                 dlss_files.push((path.to_path_buf(), pe_opt.and_then(|p| p.version)));
-            } else if (file_name == "nvngx_dlssg.dll" || file_name == "sl.dlss_g.dll" || file_name == "sl.dlss.dll" || file_name.contains("framegeneration_dx12") || file_name == "fgvk.dll") && !is_inside_mod_dir {
+            } else if (file_name == "nvngx_dlssg.dll" || file_name == "sl.dlss_g.dll" || file_name.contains("framegeneration_dx12") || file_name == "fgvk.dll") && !is_inside_mod_dir {
                 has_fg = true;
                 let pe_opt = inspect_pe(path);
                 dlss_files.push((path.to_path_buf(), pe_opt.and_then(|p| p.version)));
@@ -1125,6 +1125,9 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
 
     let mut installed_route = None;
     if let Some(manifest) = crate::core::journal::read_manifest(dir) {
+        if manifest.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
+            mfg_addon = !manifest.frame_gen_proxies.is_empty() && manifest.frame_gen_proxies.iter().all(|rel| dir.join(rel).is_file());
+        }
         if !manifest.route.is_empty() {
             installed_route = Some(manifest.route.clone());
             if manifest.route == "feeder" {
@@ -1773,6 +1776,18 @@ mod tests {
     }
 
     #[test]
+    fn super_resolution_plugin_is_not_frame_generation() {
+        let dir = std::env::temp_dir().join(format!("sm86-sr-only-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("game.exe"), vec![0u8; 10000]).unwrap();
+        fs::write(dir.join("D3D12Core.dll"), b"core").unwrap();
+        fs::write(dir.join("sl.dlss.dll"), b"super resolution").unwrap();
+        let game = scan_game_directory(&dir).unwrap();
+        assert!(!game.has_frame_generation);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn test_scan_synthetic_game_directory() {
         let temp_dir = std::env::temp_dir().join(format!("dlss_scan_synthetic_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
         let bin_dir = temp_dir.join("bin").join("x64");
@@ -1910,6 +1925,8 @@ mod tests {
         fs::create_dir_all(&bdir).unwrap();
 
         let manifest = crate::core::journal::ActiveManifest {
+            frame_gen_backend: None,
+            frame_gen_proxies: Vec::new(),
             version: 1,
             date: "2026-09-11 12:00 UTC".to_string(),
             route: "feeder".to_string(),
@@ -2449,6 +2466,4 @@ mod tests {
         }
     }
 }
-
-
 

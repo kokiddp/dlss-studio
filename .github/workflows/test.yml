@@ -1,0 +1,21 @@
+name: Windows PR checks
+
+on:
+  pull_request:
+  push:
+    branches: [feat/rtx30-sm86-frame-generation]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check all Windows targets
+        run: cargo check --locked --all-targets
+      - name: Run tests without game payload downloads
+        run: cargo test --locked --bin dlss-studio

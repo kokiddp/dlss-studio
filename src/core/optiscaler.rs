@@ -446,6 +446,7 @@ pub fn find_nvngx_snippet_payload(opti_dir: &Path) -> Option<PathBuf> {
 /// Enables 100% in-memory / temporary sandbox unit testing without machine-level dependencies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PayloadBundle {
+    pub sm86: Option<crate::core::sm86_fg::Sm86Payload>,
     pub optiscaler_dll: PathBuf,
     pub optiscaler_ini: PathBuf,
     pub optiscaler_dir: Option<PathBuf>,
@@ -486,6 +487,7 @@ impl PayloadBundle {
         let dgvoodoo = crate::core::downloader::find_local_dgvoodoo_components();
 
         Ok(Self {
+            sm86: crate::core::sm86_fg::find_payload(),
             optiscaler_dll,
             optiscaler_ini,
             optiscaler_dir,
@@ -570,6 +572,9 @@ pub fn find_overlay_addon_payload() -> Option<PathBuf> {
 
 #[derive(Debug, Clone)]
 pub struct DeployOptions {
+    /// Explicit backend for new callers; None preserves legacy mfg_unlock semantics.
+    pub frame_gen_backend: Option<crate::core::framegen::FrameGenBackend>,
+    pub frame_gen_gpu: Option<crate::core::gpu::GpuInfo>,
     pub game_name: Option<String>,
     pub game_dir: PathBuf,
     pub exe_path: PathBuf,
@@ -584,6 +589,8 @@ pub struct DeployOptions {
 impl Default for DeployOptions {
     fn default() -> Self {
         Self {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: None,
             game_dir: PathBuf::new(),
             exe_path: PathBuf::new(),
@@ -644,9 +651,9 @@ fn is_known_mod_file(dest: &Path) -> bool {
     }) {
         return true;
     }
-    let hook_names = ["dxgi.dll", "winmm.dll", "d3d12.dll", "d3d11.dll", "d3d9.dll", "d3d8.dll", "opengl32.dll", "dinput8.dll", "version.dll"];
+    let hook_names = ["dxgi.dll", "winmm.dll", "dbghelp.dll", "d3d12.dll", "d3d11.dll", "d3d9.dll", "d3d8.dll", "opengl32.dll", "dinput8.dll", "version.dll"];
     if hook_names.contains(&name.as_str()) && dest.is_file() {
-        return crate::core::pe::is_optiscaler_or_proxy(dest) || crate::core::pe::is_reshade_dll(dest).0;
+        return crate::core::pe::is_dlssg_sm86_proxy(dest) || crate::core::pe::is_optiscaler_or_proxy(dest) || crate::core::pe::is_reshade_dll(dest).0;
     }
     false
 }
@@ -903,8 +910,12 @@ fn carry_forward_existing_backups(
     backup_dir: &Path,
     manifest: &mut ActiveManifest,
     log: &mut Vec<String>,
-) {
+) -> std::io::Result<()> {
     if let Some(prev) = crate::core::journal::read_manifest(game_dir) {
+        // Keep ownership of files not recopied by this route, including SM86
+        // configuration and notices. Restore must not lose them on reinstall.
+        manifest.added = prev.added.clone();
+        manifest.added_dirs = prev.added_dirs.clone();
         let prev_bdir = crate::core::journal::backup_dir(game_dir);
         for item in prev.replaced {
             let old_backup_file = if let Some(ref p) = prev.backup_prefix {
@@ -912,12 +923,18 @@ fn carry_forward_existing_backups(
             } else {
                 prev_bdir.join(&item.rel)
             };
-            if old_backup_file.is_file() && !crate::core::journal::is_proxy_hook(&old_backup_file) {
+            if !old_backup_file.is_file() {
+                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Missing original backup: {}", old_backup_file.display())));
+            }
+            if !crate::core::journal::is_proxy_hook(&old_backup_file) {
                 let new_backup_file = backup_dir.join(&item.rel);
                 if let Some(parent) = new_backup_file.parent() {
-                    let _ = fs::create_dir_all(parent);
+                    fs::create_dir_all(parent)?;
                 }
-                if fs::copy(&old_backup_file, &new_backup_file).is_ok() {
+                if old_backup_file != new_backup_file {
+                    fs::copy(&old_backup_file, &new_backup_file)?;
+                }
+                {
                     if !manifest.replaced.iter().any(|r| r.rel == item.rel) {
                         manifest.replaced.push(item.clone());
                         log.push(format!("[BACKUP] Preserved original vanilla backup: {}", item.rel));
@@ -926,6 +943,7 @@ fn carry_forward_existing_backups(
             }
         }
     }
+    Ok(())
 }
 
 fn track_and_copy(
@@ -961,7 +979,7 @@ fn track_and_copy(
             if let Some(p) = backup_dest.parent() {
                 fs::create_dir_all(p)?;
             }
-            let _ = fs::copy(dest, &backup_dest);
+            fs::copy(dest, &backup_dest)?;
             manifest.replaced.push(ManifestItem {
                 rel: rel.clone(),
                 old_hash: None,
@@ -975,6 +993,8 @@ fn track_and_copy(
         }
     }
 
+    // Write-ahead journal: even a failed or interrupted copy is recoverable.
+    save_manifest(game_dir, manifest)?;
     fs::copy(src, dest)?;
     log.push(format!("[COPY] Deployed {}", rel));
     Ok(())
@@ -1013,7 +1033,7 @@ fn track_and_write(
             if let Some(p) = backup_dest.parent() {
                 fs::create_dir_all(p)?;
             }
-            let _ = fs::copy(dest, &backup_dest);
+            fs::copy(dest, &backup_dest)?;
             manifest.replaced.push(ManifestItem {
                 rel: rel.clone(),
                 old_hash: None,
@@ -1027,14 +1047,164 @@ fn track_and_write(
         }
     }
 
+    save_manifest(game_dir, manifest)?;
     fs::write(dest, content)?;
     log.push(format!("[WRITE] Configured {}", rel));
     Ok(())
 }
 
+pub fn deploy_optiscaler_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
+    deploy_with_framegen(opts, payloads, crate::core::install_routes::InstallRoute::OptiScaler, deploy_optiscaler_inner)
+}
+
+pub fn deploy_native_dlss5_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
+    deploy_with_framegen(opts, payloads, crate::core::install_routes::InstallRoute::Native, deploy_native_dlss5_inner)
+}
+
+pub fn deploy_feeder_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
+    deploy_with_framegen(opts, payloads, crate::core::install_routes::InstallRoute::Feeder, deploy_feeder_inner)
+}
+
+/// Validate BEFORE route cleanup, then use the existing renderer with a single
+/// FG implementation. The SM86 route never deploys RTXMFG or the Ada add-on.
+fn deploy_with_framegen(
+    opts: &DeployOptions,
+    payloads: &PayloadBundle,
+    route: crate::core::install_routes::InstallRoute,
+    deploy: fn(&DeployOptions, &PayloadBundle) -> Result<DeployResult, String>,
+) -> Result<DeployResult, String> {
+    use crate::core::{framegen::{FrameGenBackend, framegen_capability}, sm86_fg};
+    let backend = opts.frame_gen_backend.unwrap_or(if !opts.mfg_unlock {
+        FrameGenBackend::None
+    } else if route == crate::core::install_routes::InstallRoute::OptiScaler {
+        FrameGenBackend::RtxMfg
+    } else { FrameGenBackend::RenoDxAda });
+    let sm86 = backend == FrameGenBackend::DlssgSm86;
+    if (backend == FrameGenBackend::RtxMfg && route != crate::core::install_routes::InstallRoute::OptiScaler)
+        || (backend == FrameGenBackend::RenoDxAda && route == crate::core::install_routes::InstallRoute::OptiScaler)
+    { return Err("Frame Generation backend does not match the rendering route".into()); }
+    let mod_root = crate::core::compatibility::managed_mod_root(&opts.game_dir, Some(&opts.exe_path))
+        .unwrap_or_else(|| opts.exe_path.parent().unwrap_or(&opts.game_dir).to_path_buf());
+    crate::core::install_guards::assert_game_closed(&opts.game_dir, Some(&opts.exe_path))?;
+    if sm86 {
+        let gpu = opts.frame_gen_gpu.as_ref().ok_or("SM86 requires detected GPU information")?;
+        let mut game = crate::core::scan::scan_game_directory(&opts.game_dir).ok_or("Cannot verify native DLSS-G integration")?;
+        game.exe_path = opts.exe_path.clone();
+        game.api = opts.api.clone();
+        game.bitness = crate::core::pe::inspect_pe(&opts.exe_path).ok_or("Cannot verify game executable bitness")?.bitness;
+        let capability = framegen_capability(&game, gpu, route);
+        if capability.backend != FrameGenBackend::DlssgSm86 {
+            return Err(capability.reason.unwrap_or("SM86 is not supported for this game").into());
+        }
+        sm86_fg::configure_ini("", opts.mfg_multiplier)?;
+        payloads.sm86.as_ref().ok_or("Verified SM86 payload is missing; download it first")?.verify()?;
+        sm86_fg::check_proxy_slots(&mod_root, &opts.game_dir)?;
+        // Avoid following an externally controlled INI/notice symlink.
+        for name in [sm86_fg::INI_NAME, sm86_fg::NOTICE_NAME] {
+            let path = mod_root.join(name);
+            if let Ok(meta) = fs::symlink_metadata(&path) {
+                if !meta.is_file() { return Err(format!("SM86 target is not a regular file: {}", path.display())); }
+            }
+        }
+    }
+    let previous_ini = if sm86 && mod_root.join(sm86_fg::INI_NAME).exists() {
+        Some(fs::read_to_string(mod_root.join(sm86_fg::INI_NAME)).map_err(|e| e.to_string())?)
+    } else { None };
+    // Preserve the INI on same-backend reinstalls. Backend switches remove only
+    // manifest-owned, hash-recognized proxies and restore any original config.
+    if !sm86 { remove_managed_sm86(&opts.game_dir)?; }
+    let mut render_opts = opts.clone();
+    render_opts.mfg_unlock = matches!(backend, FrameGenBackend::RenoDxAda | FrameGenBackend::RtxMfg);
+    let mut result = match deploy(&render_opts, payloads) {
+        Ok(result) => result,
+        Err(error) if sm86 => return Err(rollback_sm86(&opts.game_dir, error)),
+        Err(error) => return Err(error),
+    };
+    let mut manifest = crate::core::journal::read_manifest(&opts.game_dir).ok_or("Installer did not save its manifest")?;
+    manifest.frame_gen_backend = Some(backend);
+    if sm86 {
+        let payload = payloads.sm86.as_ref().ok_or("SM86 payload disappeared")?;
+        if let Err(error) = deploy_sm86_files(opts, payload, &mod_root, previous_ini.as_deref(), &mut manifest, &mut result.log_lines) {
+            return Err(rollback_sm86(&opts.game_dir, error));
+        }
+        result.log_lines.push(format!("[SM86] Enabled {}x ceiling; select DLSS Frame Generation in the game. Actual multiplier is game-dependent.", opts.mfg_multiplier));
+    }
+    save_manifest(&opts.game_dir, &manifest).map_err(|e| e.to_string())?;
+    result.replaced = manifest.replaced.len();
+    result.added = manifest.added.len();
+    Ok(result)
+}
+
+fn rollback_sm86(game_dir: &Path, error: String) -> String {
+    match crate::core::journal::restore_game(game_dir) {
+        Ok(_) => format!("{error}. Installation rolled back; original files restored."),
+        Err(rollback) => format!("{error}. Rollback failed: {rollback}. Keep _DLSS5_Backup and use Restore originals before retrying."),
+    }
+}
+
+fn deploy_sm86_files(
+    opts: &DeployOptions,
+    payload: &crate::core::sm86_fg::Sm86Payload,
+    mod_root: &Path,
+    previous_ini: Option<&str>,
+    manifest: &mut ActiveManifest,
+    log: &mut Vec<String>,
+) -> Result<(), String> {
+    use crate::core::sm86_fg;
+    let backup = crate::core::journal::backup_dir(&opts.game_dir).join(manifest.backup_prefix.as_deref().unwrap_or(""));
+    manifest.frame_gen_proxies.clear();
+    for (name, _, _) in sm86_fg::PROXIES {
+        let dest = mod_root.join(name);
+        let rel = dest.strip_prefix(&opts.game_dir).map_err(|_| "SM86 proxies must be inside the game directory")?.to_string_lossy().to_string();
+        manifest.frame_gen_proxies.push(rel);
+        track_and_copy(manifest, &opts.game_dir, &backup, &payload.directory.join(name), &dest, "sm86_proxy", log).map_err(|e| e.to_string())?;
+    }
+    let ini = mod_root.join(sm86_fg::INI_NAME);
+    let text = sm86_fg::configure_ini(previous_ini.unwrap_or(""), opts.mfg_multiplier)?;
+    track_and_write(manifest, &opts.game_dir, &backup, &ini, &text, "sm86_config", log).map_err(|e| e.to_string())?;
+    track_and_copy(manifest, &opts.game_dir, &backup, &payload.directory.join(sm86_fg::NOTICE_NAME), &mod_root.join(sm86_fg::NOTICE_NAME), "sm86_notice", log).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn remove_managed_sm86(game_dir: &Path) -> Result<(), String> {
+    use crate::core::{framegen::FrameGenBackend, sm86_fg};
+    let Some(mut manifest) = crate::core::journal::read_manifest(game_dir) else { return Ok(()); };
+    if manifest.frame_gen_backend != Some(FrameGenBackend::DlssgSm86) { return Ok(()); }
+    // Verify the entire set before removing anything. Never erase a DLL that
+    // another mod has replaced since our install.
+    for rel in &manifest.frame_gen_proxies {
+        let path = game_dir.join(rel);
+        if path.exists() && !sm86_fg::is_proxy(&path) {
+            return Err(format!("Managed SM86 proxy changed externally: {}. Resolve the conflict before switching backends.", path.display()));
+        }
+    }
+    let mut targets = manifest.frame_gen_proxies.clone();
+    for rel in &manifest.frame_gen_proxies {
+        let parent = Path::new(rel).parent().unwrap_or(Path::new(""));
+        for name in [sm86_fg::INI_NAME, sm86_fg::NOTICE_NAME] {
+            let target = parent.join(name).to_string_lossy().to_string();
+            if !targets.contains(&target) { targets.push(target); }
+        }
+    }
+    for rel in &targets {
+        let path = game_dir.join(rel);
+        if manifest.added.contains(rel) && path.is_file() {
+            fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+        if manifest.replaced.iter().any(|r| &r.rel == rel) {
+            let original = crate::core::journal::backup_dir(game_dir).join(manifest.backup_prefix.as_deref().unwrap_or("")).join(rel);
+            fs::copy(original, &path).map_err(|e| e.to_string())?;
+        }
+    }
+    manifest.added.retain(|rel| !targets.contains(rel));
+    manifest.frame_gen_proxies.clear();
+    manifest.frame_gen_backend = Some(FrameGenBackend::None);
+    save_manifest(game_dir, &manifest).map_err(|e| e.to_string())
+}
+
 /// Deploys Pure OptiScaler Pre-SR and Standalone 4x MFG (Universal RTXMFG v1.3.2) using provided payload bundle.
 /// STRICTLY ZERO ReShade or add-on files are copied or referenced in this route.
-pub fn deploy_optiscaler_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
+fn deploy_optiscaler_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
     let mut log = Vec::new();
     let mod_root = crate::core::compatibility::managed_mod_root(&opts.game_dir, Some(&opts.exe_path))
         .unwrap_or_else(|| opts.exe_path.parent().unwrap_or(&opts.game_dir).to_path_buf());
@@ -1055,7 +1225,7 @@ pub fn deploy_optiscaler_with_bundle(opts: &DeployOptions, payloads: &PayloadBun
 
     remove_stale_proxy_hooks(&mod_root, &[hook_dll], &mut log);
 
-    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let prefix = format!("originals/{}", ts);
     let backup_dir = opts.game_dir.join("_DLSS5_Backup").join(&prefix);
 
@@ -1064,6 +1234,8 @@ pub fn deploy_optiscaler_with_bundle(opts: &DeployOptions, payloads: &PayloadBun
         .unwrap_or_else(|_| opts.exe_path.file_name().unwrap_or_default().to_string_lossy().to_string());
 
     let mut manifest = ActiveManifest {
+        frame_gen_backend: None,
+        frame_gen_proxies: Vec::new(),
         version: 1,
         date: crate::core::journal::now_timestamp_str(),
         route: "optiscaler".to_string(),
@@ -1081,7 +1253,8 @@ pub fn deploy_optiscaler_with_bundle(opts: &DeployOptions, payloads: &PayloadBun
         added_dirs: Vec::new(),
     };
 
-    carry_forward_existing_backups(&opts.game_dir, &backup_dir, &mut manifest, &mut log);
+    carry_forward_existing_backups(&opts.game_dir, &backup_dir, &mut manifest, &mut log)
+        .map_err(|e| format!("Cannot preserve original backups: {e}"))?;
 
     // 1. Copy OptiScaler.dll as the hook DLL (dxgi.dll or d3d9.dll)
     if !payloads.optiscaler_dll.is_file() {
@@ -1124,7 +1297,7 @@ pub fn deploy_optiscaler_with_bundle(opts: &DeployOptions, payloads: &PayloadBun
     let configured_ini = configure_optiscaler_ini(&base_ini_text, &OptiScalerOptions {
         pre_sr: opts.pre_sr,
         passes: opts.passes,
-        mfg_unlock: opts.mfg_unlock,
+        mfg_unlock: opts.mfg_unlock || opts.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86),
         target_exe_name: opts.exe_path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
         nr_style: opts.nr_style,
     });
@@ -1164,7 +1337,7 @@ pub fn deploy_optiscaler_with_bundle(opts: &DeployOptions, payloads: &PayloadBun
 
     // 6. Deploy verified Streamline 2.14.1 stack if game has Streamline
     // Unifies local Streamline with driver OTA to permanently eliminate the 0xC0000005 crash in sl.reflex (190_E658703.dll)
-    if mod_root.join("sl.interposer.dll").exists() {
+    if mod_root.join("sl.interposer.dll").exists() && opts.frame_gen_backend != Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
         if let Some(streamline_src) = &payloads.streamline_dir {
             if streamline_src.is_dir() {
                 let sl_files = [
@@ -1227,7 +1400,7 @@ pub fn deploy_optiscaler(opts: &DeployOptions) -> Result<DeployResult, String> {
 
 /// Deploys Native DLSS 5 route (ReShade + RenoDX + ReShade 4x MFG Unlock).
 /// STRICTLY ZERO OptiScaler files are deployed in this route.
-pub fn deploy_native_dlss5_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
+fn deploy_native_dlss5_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
     let mut log = Vec::new();
     let mod_root = crate::core::compatibility::managed_mod_root(&opts.game_dir, Some(&opts.exe_path))
         .unwrap_or_else(|| opts.exe_path.parent().unwrap_or(&opts.game_dir).to_path_buf());
@@ -1240,7 +1413,7 @@ pub fn deploy_native_dlss5_with_bundle(opts: &DeployOptions, payloads: &PayloadB
     clean_conflicting_route_artifacts("native", &opts.game_dir, &mod_root, opts.mfg_unlock, &opts.api, &mut log)
         .map_err(|e| format!("Failed to clean conflicting route artifacts: {}", e))?;
 
-    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let prefix = format!("originals/{}", ts);
     let backup_dir = opts.game_dir.join("_DLSS5_Backup").join(&prefix);
 
@@ -1249,6 +1422,8 @@ pub fn deploy_native_dlss5_with_bundle(opts: &DeployOptions, payloads: &PayloadB
         .unwrap_or_else(|_| opts.exe_path.file_name().unwrap_or_default().to_string_lossy().to_string());
 
     let mut manifest = ActiveManifest {
+        frame_gen_backend: None,
+        frame_gen_proxies: Vec::new(),
         version: 1,
         date: crate::core::journal::now_timestamp_str(),
         route: "native".to_string(),
@@ -1266,7 +1441,8 @@ pub fn deploy_native_dlss5_with_bundle(opts: &DeployOptions, payloads: &PayloadB
         added_dirs: Vec::new(),
     };
 
-    carry_forward_existing_backups(&opts.game_dir, &backup_dir, &mut manifest, &mut log);
+    carry_forward_existing_backups(&opts.game_dir, &backup_dir, &mut manifest, &mut log)
+        .map_err(|e| format!("Cannot preserve original backups: {e}"))?;
 
     let hook_dll = if opts.api.to_lowercase().contains("9") {
         "d3d9.dll"
@@ -1620,7 +1796,7 @@ pub fn configure_host64_reshade_ini(nr_style: usize) -> String {
 
 /// Deploys DLSS5-Feeder route using provided payload bundle.
 /// STRICTLY ZERO Pre-SR, ZERO MFG, ZERO OptiScaler files are deployed in this route.
-pub fn deploy_feeder_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
+fn deploy_feeder_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
     let mut log = Vec::new();
     let mod_root = crate::core::compatibility::managed_mod_root(&opts.game_dir, Some(&opts.exe_path))
         .unwrap_or_else(|| opts.exe_path.parent().unwrap_or(&opts.game_dir).to_path_buf());
@@ -1633,7 +1809,7 @@ pub fn deploy_feeder_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle)
     clean_conflicting_route_artifacts("feeder", &opts.game_dir, &mod_root, opts.mfg_unlock, &opts.api, &mut log)
         .map_err(|e| format!("Failed to clean conflicting route artifacts: {}", e))?;
 
-    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let prefix = format!("originals/{}", ts);
     let backup_dir = opts.game_dir.join("_DLSS5_Backup").join(&prefix);
 
@@ -1644,6 +1820,8 @@ pub fn deploy_feeder_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle)
     let bitness = crate::core::pe::inspect_pe(&opts.exe_path).map(|p| p.bitness).unwrap_or(64);
 
     let mut manifest = ActiveManifest {
+        frame_gen_backend: None,
+        frame_gen_proxies: Vec::new(),
         version: 1,
         date: crate::core::journal::now_timestamp_str(),
         route: "feeder".to_string(),
@@ -1661,7 +1839,8 @@ pub fn deploy_feeder_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle)
         added_dirs: Vec::new(),
     };
 
-    carry_forward_existing_backups(&opts.game_dir, &backup_dir, &mut manifest, &mut log);
+    carry_forward_existing_backups(&opts.game_dir, &backup_dir, &mut manifest, &mut log)
+        .map_err(|e| format!("Cannot preserve original backups: {e}"))?;
 
     let api_lower = opts.api.to_lowercase();
     let is_legacy_dx = api_lower.contains('9') || api_lower.contains('8') || api_lower.contains("d3d9") || api_lower.contains("d3d8");
@@ -2105,6 +2284,106 @@ pub fn deploy_feeder(opts: &DeployOptions) -> Result<DeployResult, String> {
 mod tests {
     use super::*;
 
+    fn sm86_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sm86-{name}-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sm86_files_are_journaled_and_restore_preserves_original_ini() {
+        use crate::core::{framegen::FrameGenBackend, sm86_fg};
+        let root = sm86_test_dir("restore");
+        let game = root.join("game");
+        let bin = game.join("bin");
+        let payload_dir = root.join("payload");
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(&payload_dir).unwrap();
+        for (name, _, _) in sm86_fg::PROXIES { fs::write(payload_dir.join(name), b"synthetic proxy").unwrap(); }
+        fs::write(payload_dir.join(sm86_fg::NOTICE_NAME), b"synthetic notices").unwrap();
+        let original = "; original\n[User]\nKeep=1\n";
+        fs::write(bin.join(sm86_fg::INI_NAME), original).unwrap();
+        fs::write(bin.join("user-mod.dll"), b"do not touch").unwrap();
+        let opts = DeployOptions { game_dir: game.clone(), mfg_multiplier: 4, ..Default::default() };
+        let mut manifest = ActiveManifest {
+            frame_gen_backend: Some(FrameGenBackend::DlssgSm86),
+            backup_prefix: Some("originals/sm86-test".into()),
+            ..Default::default()
+        };
+        deploy_sm86_files(&opts, &sm86_fg::Sm86Payload { directory: payload_dir }, &bin, Some(original), &mut manifest, &mut Vec::new()).unwrap();
+        let saved = crate::core::journal::read_manifest(&game).unwrap();
+        assert_eq!(saved.frame_gen_proxies.len(), 4);
+        assert_eq!(saved.added.len(), 5);
+        assert_eq!(saved.replaced.len(), 1);
+        assert_eq!(get_ini(&fs::read_to_string(bin.join(sm86_fg::INI_NAME)).unwrap(), "FrameGeneration", "MaxGeneratedFrames"), Some("3".into()));
+        crate::core::journal::restore_game(&game).unwrap();
+        assert_eq!(fs::read_to_string(bin.join(sm86_fg::INI_NAME)).unwrap(), original);
+        assert_eq!(fs::read(bin.join("user-mod.dll")).unwrap(), b"do not touch");
+        for (name, _, _) in sm86_fg::PROXIES { assert!(!bin.join(name).exists()); }
+        assert!(!bin.join(sm86_fg::NOTICE_NAME).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sm86_failed_copy_is_recoverable_from_write_ahead_journal() {
+        let game = sm86_test_dir("failed-copy");
+        let mut manifest = ActiveManifest {
+            frame_gen_backend: Some(crate::core::framegen::FrameGenBackend::DlssgSm86),
+            backup_prefix: Some("originals/test".into()), ..Default::default()
+        };
+        let dest = game.join("original.cfg");
+        fs::write(&dest, b"original").unwrap();
+        let result = track_and_copy(&mut manifest, &game, &game.join("_DLSS5_Backup/originals/test"), &game.join("missing.dll"), &dest, "config", &mut Vec::new());
+        assert!(result.is_err());
+        assert_eq!(crate::core::journal::read_manifest(&game).unwrap().replaced.len(), 1);
+        crate::core::journal::restore_game(&game).unwrap();
+        assert_eq!(fs::read(dest).unwrap(), b"original");
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn sm86_reinstall_carries_original_config_and_added_ownership() {
+        let game = sm86_test_dir("reinstall");
+        let old_backup = game.join("_DLSS5_Backup/originals/first");
+        fs::create_dir_all(&old_backup).unwrap();
+        fs::write(old_backup.join("dlssg_sm86.ini"), b"original config").unwrap();
+        let old = ActiveManifest {
+            backup_prefix: Some("originals/first".into()),
+            added: vec!["dbghelp.dll".into(), "dlssg_sm86_THIRD_PARTY_NOTICES.txt".into()],
+            replaced: vec![ManifestItem { rel: "dlssg_sm86.ini".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        save_manifest(&game, &old).unwrap();
+        let mut next = ActiveManifest::default();
+        let next_backup = game.join("_DLSS5_Backup/originals/second");
+        carry_forward_existing_backups(&game, &next_backup, &mut next, &mut Vec::new()).unwrap();
+        assert_eq!(next.added, old.added);
+        assert_eq!(next.replaced.len(), 1);
+        assert_eq!(fs::read(next_backup.join("dlssg_sm86.ini")).unwrap(), b"original config");
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn sm86_backend_switch_refuses_externally_replaced_proxy() {
+        let game = sm86_test_dir("changed-proxy");
+        fs::write(game.join("version.dll"), b"another mod").unwrap();
+        save_manifest(&game, &ActiveManifest {
+            frame_gen_backend: Some(crate::core::framegen::FrameGenBackend::DlssgSm86),
+            frame_gen_proxies: vec!["version.dll".into()],
+            added: vec!["version.dll".into()], ..Default::default()
+        }).unwrap();
+        assert!(remove_managed_sm86(&game).is_err());
+        assert_eq!(fs::read(game.join("version.dll")).unwrap(), b"another mod");
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn old_manifests_default_to_no_sm86_backend() {
+        let manifest: ActiveManifest = serde_json::from_str(r#"{"route":"native","version":1}"#).unwrap();
+        assert_eq!(manifest.frame_gen_backend, None);
+        assert!(manifest.frame_gen_proxies.is_empty());
+    }
+
     pub use crate::core::state::STATE_TEST_MUTEX;
 
     #[test]
@@ -2189,6 +2468,8 @@ dgVoodooWatermark = false
         fs::write(&exe_path, b"DUMMY_EXE").unwrap();
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Test Game".to_string()),
             game_dir: content_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2300,6 +2581,8 @@ dgVoodooWatermark = false
         fs::write(&custom_addon_file, b"CUSTOM_ADDON_PAYLOAD").unwrap();
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Addon Test Game".to_string()),
             game_dir: content_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2380,6 +2663,8 @@ dgVoodooWatermark = false
         fs::write(bin_dir.join("D3D12Core.dll"), b"core").unwrap();
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("CyberGame".to_string()),
             game_dir: temp_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2456,6 +2741,8 @@ dgVoodooWatermark = false
         assert!(is_known_mod_file(&pre_existing_dxgi), "is_known_mod_file must recognize pre-existing ReShade dxgi.dll");
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Game".to_string()),
             game_dir: temp_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2510,6 +2797,8 @@ dgVoodooWatermark = false
         let orig_state = crate::core::state::load_state();
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("CyberGame".to_string()),
             game_dir: temp_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2587,6 +2876,8 @@ dgVoodooWatermark = false
         fs::write(bin_dir.join("D3D12Core.dll"), b"core").unwrap();
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("FontGame".to_string()),
             game_dir: temp_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2706,6 +2997,7 @@ dgVoodooWatermark = false
                 nvngx_dlss_dll: Some(dlss_dll),
                 nvngx_dlssnr_dll: Some(nr_dll),
                 nvngx_snippet_dll: Some(snippet),
+                sm86: None,
                 rtxmfg_dll: Some(rtxmfg),
                 reshade64_dll: Some(reshade),
                 reshade32_dll: Some(reshade32),
@@ -2731,6 +3023,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Pure Opti Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2782,6 +3076,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Opti No MFG".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2823,6 +3119,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Cyberpunk 2077".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2894,6 +3192,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("ReShade Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2937,6 +3237,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("ReShade No MFG".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -2969,6 +3271,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Feeder Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3015,6 +3319,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Feeder MFG Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3063,6 +3369,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("DirectX 11 Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3116,6 +3424,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Vulkan Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3158,6 +3468,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Rollback Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3202,6 +3514,8 @@ dgVoodooWatermark = false
 
         // 1. Deploy Route 1 (OptiScaler)
         let opti_opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Switch Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3222,6 +3536,8 @@ dgVoodooWatermark = false
 
         // 3. Deploy Route 2 (ReShade + RenoDX)
         let reshade_opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Switch Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3256,6 +3572,8 @@ dgVoodooWatermark = false
         payloads.optiscaler_dll = temp_dir.join("non_existent_optiscaler.dll");
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Fail Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3382,6 +3700,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Upgrade Test Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3437,6 +3757,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("OpenGL Test Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3484,6 +3806,8 @@ dgVoodooWatermark = false
 
         // Step 1: Deploy Feeder route with MFG on Vulkan
         let feeder_opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Baldurs Gate 3".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3507,6 +3831,8 @@ dgVoodooWatermark = false
 
         // Step 2: Directly hot-swap to OptiScaler (WITHOUT calling restore_game!)
         let opti_opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Baldurs Gate 3".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3579,6 +3905,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let feeder_opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Preserve Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3596,6 +3924,8 @@ dgVoodooWatermark = false
 
         // Swap directly to OptiScaler: replaces dxgi.dll with OptiScaler
         let opti_opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Preserve Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3610,6 +3940,8 @@ dgVoodooWatermark = false
 
         // Swap directly to Native DLSS 5
         let native_opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Preserve Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3658,6 +3990,8 @@ dgVoodooWatermark = false
         payloads.dgvoodoo = None;
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Psychonauts".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3702,6 +4036,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Psychonauts".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3786,6 +4122,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Legacy D3D8 Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3847,6 +4185,8 @@ dgVoodooWatermark = false
         let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
 
         let opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Cyberpunk 2077".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3894,6 +4234,8 @@ dgVoodooWatermark = false
 
         // 1. Deploy Native Route with nr_style = 2 (Cinematic)
         let native_opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Test Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3916,6 +4258,8 @@ dgVoodooWatermark = false
 
         // 3. Deploy Feeder Route with nr_style = 1 (Natural)
         let feeder_opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Test Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3934,6 +4278,8 @@ dgVoodooWatermark = false
 
         // 4. Deploy OptiScaler Route with Pre-SR and nr_style = 2
         let opti_opts = DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Test Game".to_string()),
             game_dir: game_dir.clone(),
             exe_path: exe_path.clone(),
@@ -3953,5 +4299,3 @@ dgVoodooWatermark = false
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }
-
-

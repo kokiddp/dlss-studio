@@ -1,5 +1,7 @@
 pub mod pe;
 pub mod gpu;
+pub mod framegen;
+pub mod sm86_fg;
 pub mod scan;
 pub mod journal;
 pub mod optiscaler;

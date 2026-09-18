@@ -30,6 +30,10 @@ pub struct ManifestGame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveManifest {
+    #[serde(default)]
+    pub frame_gen_backend: Option<crate::core::framegen::FrameGenBackend>,
+    #[serde(default)]
+    pub frame_gen_proxies: Vec<String>,
     #[serde(default = "default_manifest_version")]
     pub version: u32,
     #[serde(default)]
@@ -55,6 +59,8 @@ fn default_manifest_version() -> u32 { 1 }
 impl Default for ActiveManifest {
     fn default() -> Self {
         Self {
+            frame_gen_backend: None,
+            frame_gen_proxies: Vec::new(),
             version: 1,
             date: format!("{:?}", std::time::SystemTime::now()),
             route: "optiscaler".to_string(),
@@ -161,7 +167,14 @@ pub fn save_manifest(game_dir: &Path, manifest: &ActiveManifest) -> std::io::Res
     let bdir = backup_dir(game_dir);
     fs::create_dir_all(&bdir)?;
     let bytes = serde_json::to_vec_pretty(manifest)?;
-    fs::write(bdir.join("manifest.json"), bytes)?;
+    use std::io::Write;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let temporary = bdir.join(format!("manifest-{}-{stamp}.tmp", std::process::id()));
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&temporary, bdir.join("manifest.json"))?;
     Ok(())
 }
 
@@ -211,6 +224,7 @@ pub fn resolve_target_path(game_dir: &Path, rel: &str) -> PathBuf {
 }
 
 pub fn is_proxy_hook(path: &Path) -> bool {
+    if crate::core::pe::is_dlssg_sm86_proxy(path) { return true; }
     let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
     let hook_names = ["dxgi.dll", "winmm.dll", "d3d12.dll", "d3d11.dll", "d3d9.dll", "d3d8.dll", "opengl32.dll", "dinput8.dll", "version.dll"];
     if hook_names.contains(&fname.as_str()) {
@@ -437,7 +451,7 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
     for rel in &manifest.added {
         let target_file = resolve_target_path(game_dir, rel);
         if target_file.exists() {
-            let _ = fs::remove_file(&target_file);
+            fs::remove_file(&target_file)?;
             crate::core::logger::debug("restore", &format!("Removed mod file: {}", target_file.display()));
         }
     }
@@ -445,7 +459,7 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
     for rel in manifest.added_dirs.iter().rev() {
         let target_dir = resolve_target_path(game_dir, rel);
         if target_dir.exists() {
-            let _ = fs::remove_dir_all(&target_dir);
+            fs::remove_dir_all(&target_dir)?;
             crate::core::logger::debug("restore", &format!("Removed mod directory: {}", target_dir.display()));
         }
     }
@@ -454,7 +468,11 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
     let exe_opt = manifest.game_exe.as_ref()
         .or_else(|| manifest.game.as_ref().and_then(|g| g.exe.as_ref()))
         .map(|e| game_dir.join(e));
-    let _ = clean_untracked_mods_with_exe(game_dir, exe_opt.as_deref());
+    // The SM86 path owns an exact journaled set. A blanket cleanup here can
+    // erase an unrelated mod or the original configuration just restored.
+    if manifest.frame_gen_backend != Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
+        clean_untracked_mods_with_exe(game_dir, exe_opt.as_deref())?;
+    }
     let _ = crate::core::vulkan_layer::unregister_vulkan_layer(game_dir);
 
     let manifest_path = bdir.join("manifest.json");
@@ -713,4 +731,3 @@ mod tests {
         let _ = fs::remove_dir_all(&temp);
     }
 }
-

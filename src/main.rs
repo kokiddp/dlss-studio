@@ -38,6 +38,8 @@ fn main() {
         let exe_path = std::path::PathBuf::from(&args[3]);
         let passes = args.get(4).and_then(|p| p.parse::<u32>().ok()).unwrap_or(1);
         let opts = core::optiscaler::DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Target Game".to_string()),
             game_dir,
             exe_path,
@@ -142,6 +144,8 @@ fn main() {
         let game_dir = std::path::PathBuf::from(&args[2]);
         if let Some(game) = core::scan::scan_game_directory(&game_dir) {
             let opts = core::optiscaler::DeployOptions {
+                frame_gen_backend: None,
+                frame_gen_gpu: None,
                 game_name: Some(game.name.clone()),
                 game_dir: game.dir.clone(),
                 exe_path: game.exe_path.clone(),

@@ -238,11 +238,11 @@ pub fn App() -> Element {
     let init_hidden_count = init_state.hidden.len();
 
     let mut gpus = use_signal(|| vec![GpuInfo {
-        name: "DirectX 12 Physical Device".to_string(),
-        vendor_id: 0x10DE,
-        device_id: 0x2684,
-        dedicated_video_memory: 24 * 1024 * 1024 * 1024,
-        is_rtx_40: true,
+        name: "Detecting GPU...".to_string(),
+        vendor_id: 0,
+        device_id: 0,
+        dedicated_video_memory: 0,
+        is_rtx_40: false,
     }]);
     let mut games = use_signal(move || init_cached_games);
     let recents = use_signal(move || init_recents);
@@ -525,12 +525,16 @@ pub fn App() -> Element {
         });
     });
 
-    let primary_gpu = gpus.read().first().cloned().unwrap_or_else(|| GpuInfo {
-        name: "DirectX 12 Physical Device".to_string(),
-        vendor_id: 0x10DE,
-        device_id: 0x2684,
-        dedicated_video_memory: 24 * 1024 * 1024 * 1024,
-        is_rtx_40: true,
+    let primary_gpu = {
+        let detected = gpus.read();
+        detected.iter().find(|gpu| gpu.vendor_id == 0x10de)
+            .or_else(|| detected.first()).cloned()
+    }.unwrap_or_else(|| GpuInfo {
+        name: "GPU not detected".to_string(),
+        vendor_id: 0,
+        device_id: 0,
+        dedicated_video_memory: 0,
+        is_rtx_40: false,
     });
 
     let selected_game = sheet_game_idx.read().and_then(|idx| games.read().get(idx).cloned());
@@ -2657,8 +2661,15 @@ pub fn App() -> Element {
                         } else {
                             "native".to_string()
                         };
-                        let is_fg_capable = crate::core::install_routes::is_frame_generation_supported(&target_game);
-                        let show_mfg = is_fg_capable && (primary_gpu.is_rtx_40 || target_game.mfg_unlock_installed);
+                        let fg_route = if effective_backend == "optiscaler" {
+                            crate::core::install_routes::InstallRoute::OptiScaler
+                        } else if effective_route == "native" {
+                            crate::core::install_routes::InstallRoute::Native
+                        } else { crate::core::install_routes::InstallRoute::Feeder };
+                        let fg_capability = crate::core::framegen::framegen_capability(&target_game, &primary_gpu, fg_route);
+                        let show_mfg = fg_capability.reason.is_none();
+                        let is_sm86 = fg_capability.backend == crate::core::framegen::FrameGenBackend::DlssgSm86;
+                        if is_sm86 && !(2..=4).contains(&*mfg_multiplier.read()) { mfg_multiplier.set(4); }
                         if !show_mfg && *mfg_choice.read() {
                             mfg_choice.set(false);
                         }
@@ -3116,8 +3127,8 @@ pub fn App() -> Element {
                                                             r#for: "chkMfg",
                                                             class: "t-left",
                                                             style: "cursor: pointer;",
-                                                            span { "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_title\")}" }
-                                                            span { class: "tag warn", "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_tag\")}" }
+                                                            span { "Frame Generation" }
+                                                            span { class: "tag warn", "{fg_capability.backend.label()}" }
                                                         }
                                                         div { class: "passes-ctrl",
                                                             span { "{crate::core::i18n::t(&current_lang.read(), \"sheet_mfg_multiplier\")}" }
@@ -3126,33 +3137,25 @@ pub fn App() -> Element {
                                                                 value: "{mfg_multiplier}",
                                                                 disabled: !*mfg_choice.read(),
                                                                 onchange: move |e| mfg_multiplier.set(e.value().parse::<u32>().unwrap_or(4)),
-                                                                option { value: "1", "1x (Auto)" }
+                                                                if !is_sm86 { option { value: "1", "1x (Auto)" } }
                                                                 option { value: "2", "2x" }
                                                                 option { value: "3", "3x" }
                                                                 option { value: "4", "4x (Default)" }
                                                             }
                                                         }
                                                     }
-                                                    div { class: "d", "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_desc\")}" }
+                                                    if is_sm86 {
+                                                        div { class: "d", "Experimental RTX 30 support. Downloads the third-party DLSSG SM86 0.3.3 runtime and notices from upstream. The multiplier is a ceiling: enable DLSS Frame Generation in the game. Requires four free proxy slots; real-game compatibility is not guaranteed. Runtime and NVIDIA resource terms remain upstream's responsibility." }
+                                                    } else {
+                                                        div { class: "d", "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_desc\")}" }
+                                                    }
                                                 }
                                             }
-                                        } else if is_dx11 && !target_game.has_frame_generation {
+                                        } else {
                                             div {
                                                 class: "emu-note",
-                                                b { "4x Multi-Frame Generation: Requires Native DLSS-G on DirectX 11" }
-                                                span { "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_dx11_note\")}" }
-                                            }
-                                        } else if !target_game.has_frame_generation {
-                                            div {
-                                                class: "emu-note",
-                                                b { "4x Multi-Frame Generation: Requires Native DLSS-G" }
-                                                span { "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_general_note\")}" }
-                                            }
-                                        } else if target_game.has_frame_generation && !primary_gpu.is_rtx_40 && !target_game.mfg_unlock_installed {
-                                            div {
-                                                class: "emu-note",
-                                                b { "4x Multi-Frame Generation: Requires RTX 40-Series GPU" }
-                                                span { "This game supports native Frame Generation, but 4x MFG unlock requires an Ada Lovelace (RTX 40-Series) GPU. (NVIDIA restricts MFG to RTX 50-Series; this mod unlocks it on RTX 40-Series cards)." }
+                                                b { "Frame Generation unavailable" }
+                                                span { "{fg_capability.reason.unwrap_or(\"Unsupported configuration\")}" }
                                             }
                                         }
 
@@ -3182,6 +3185,7 @@ pub fn App() -> Element {
                                                         disabled: *is_busy.read(),
                                                         onclick: {
                                                             let target_game = target_game.clone();
+                                                            let frame_gen_gpu = primary_gpu.clone();
                                                             let cur_eff_backend = effective_backend.clone();
                                                             let cur_eff_route = effective_route.clone();
                                                             let opti_pre_sr_val = *opti_pre_sr.read();
@@ -3200,6 +3204,7 @@ pub fn App() -> Element {
                                                                 is_busy.set(true);
 
                                                                 let target_game = target_game.clone();
+                                                                let frame_gen_gpu = frame_gen_gpu.clone();
                                                                 let cur_eff_backend = cur_eff_backend.clone();
                                                                 let cur_eff_route = cur_eff_route.clone();
 
@@ -3229,6 +3234,8 @@ pub fn App() -> Element {
                                                                     job_lines.set(lines.clone());
 
                                                                     let deploy_opts = crate::core::optiscaler::DeployOptions {
+                                                                        frame_gen_backend: Some(if mfg_choice_val { fg_capability.backend } else { crate::core::framegen::FrameGenBackend::None }),
+                                                                        frame_gen_gpu: Some(frame_gen_gpu),
                                                                         game_name: Some(target_game.name.clone()),
                                                                         game_dir: target_game.dir.clone(),
                                                                         exe_path: target_game.exe_path.clone(),
@@ -3250,6 +3257,17 @@ pub fn App() -> Element {
                                                                             return;
                                                                         }
                                                                     };
+                                                                    if is_sm86 && mfg_choice_val {
+                                                                        match crate::core::sm86_fg::ensure_payload(&mut lines).await {
+                                                                            Ok(payload) => payloads.sm86 = Some(payload),
+                                                                            Err(error) => {
+                                                                                lines.push(format!("[ERROR] SM86 payload: {error}"));
+                                                                                job_lines.set(lines);
+                                                                                is_busy.set(false);
+                                                                                return;
+                                                                            }
+                                                                        }
+                                                                    }
                                                                     if cur_eff_backend != "optiscaler" && cur_eff_route == "feeder" {
                                                                         if payloads.feeder_components.is_none() {
                                                                             match crate::core::downloader::ensure_feeder_components(&mut lines).await {
@@ -3281,7 +3299,7 @@ pub fn App() -> Element {
                                                                                 }
                                                                             }
                                                                         }
-                                                                        if mfg_choice_val && payloads.renodx_mfgunlock_addon.is_none() {
+                                                                        if mfg_choice_val && !is_sm86 && payloads.renodx_mfgunlock_addon.is_none() {
                                                                             match crate::core::downloader::ensure_mfg_v09_addon(&mut lines).await {
                                                                                 Ok(addon_p) => {
                                                                                     payloads.renodx_mfgunlock_addon = Some(addon_p);
@@ -3300,9 +3318,9 @@ pub fn App() -> Element {
                                                                     let r_task = cur_eff_route.clone();
                                                                     let result = tokio::task::spawn_blocking(move || {
                                                                         if b_task == "optiscaler" {
-                                                                            crate::core::optiscaler::deploy_optiscaler(&deploy_opts)
+                                                                            crate::core::optiscaler::deploy_optiscaler_with_bundle(&deploy_opts, &payloads)
                                                                         } else if r_task == "native" {
-                                                                            crate::core::optiscaler::deploy_native_dlss5(&deploy_opts)
+                                                                            crate::core::optiscaler::deploy_native_dlss5_with_bundle(&deploy_opts, &payloads)
                                                                         } else {
                                                                             crate::core::optiscaler::deploy_feeder_with_bundle(&deploy_opts, &payloads)
                                                                         }
@@ -4198,4 +4216,3 @@ mod tests {
         assert_eq!(format_status("zh", &AppStatus::FoundGames(5)), "共发现 5 款已安装游戏");
     }
 }
-

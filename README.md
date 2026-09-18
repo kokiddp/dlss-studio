@@ -139,7 +139,7 @@ Scans and organizes your games automatically without manual configuration:
 
 ## 🧭 Roadmap: RTX 30-Series Frame Generation
 
-> **Status: proposed—not implemented yet.** The first milestone targets Windows x64, DirectX 12 games that already include a native DLSS-G/Streamline Frame Generation integration.
+> **Status: experimental implementation, hardware validation pending.** This fork includes an opt-in RTX 30 backend for Windows x64, DirectX 12 games that already include a native DLSS-G/Streamline Frame Generation integration. See [RTX 30 setup, safety rules, and validation](docs/RTX30-SM86.md). The upstream release links above do not include this fork's changes.
 
 The proposed integration uses [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) as an external Frame Generation backend for GeForce RTX 30-Series (Ampere) GPUs. DLSS 5 STUDIO would acquire, configure, deploy, detect, and remove the compatibility runtime while retaining its existing one-click backup and restore guarantees.
 
@@ -147,14 +147,7 @@ The proposed integration uses [dlssg_for_sm86](https://github.com/sdli1995/dlssg
 
 The projects should remain separate rather than copying GPL-licensed runtime code into this MIT repository. DLSS 5 STUDIO remains the Rust orchestrator; `dlssg_for_sm86` remains an independently versioned third-party payload.
 
-```text
-Rendering route                         Frame Generation backend
-──────────────────────────────────      ─────────────────────────────
-Native DLSS / RenoDX (RTX 40)       +    RenoDX Ada MFG
-OptiScaler DLSS-NR                 +    RenoDX Ada MFG (RTX 40)
-DLSS 5 Feeder                      +    DLSSG SM86 (RTX 30)
-                                        Standalone RTXMFG
-```
+Rendering routes and Frame Generation backends are separate choices. Native DLSS / RenoDX and Feeder retain the RenoDX Ada backend for RTX 40; OptiScaler retains standalone RTXMFG. On a qualifying RTX 30 game, each rendering route can instead select DLSSG SM86. Choosing Feeder does not remove the requirement for the game's original DLSS-G integration.
 
 A centralized resolver should choose a backend from the detected GPU architecture, game API, bitness, native FG capability, selected rendering route, and available proxy-DLL slot:
 
@@ -200,7 +193,8 @@ The UI multiplier must be translated explicitly because the SM86 configuration c
 
 5. **Resolve proxy-DLL conflicts safely**
    - Prefer the upstream tool-proxy set (`version.dll`, `winmm.dll`, `dbghelp.dll`, `dinput8.dll`) when slots are free; whichever the game loads becomes active, and journal every introduced file.
-   - If only one slot is deployed, require verified load-path evidence for that game and fail closed when it is unavailable.
+   - The first implementation requires the complete four-proxy set and fails before installation when a slot has a foreign owner. A journal-owned previous RTXMFG proxy can be replaced during a backend switch.
+   - Single-slot deployment remains deferred: it requires verified load-path evidence for that game and must fail closed when it is unavailable.
    - Reject slots owned by the game, another DLSS 5 STUDIO payload, or an unknown third-party mod.
    - Reserve `dxgi.dll` and `d3d12.dll` as explicit expert fallbacks because they collide with common ReShade and OptiScaler deployments.
 
