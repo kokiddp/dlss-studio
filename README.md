@@ -137,6 +137,101 @@ Scans and organizes your games automatically without manual configuration:
 
 ---
 
+## 🧭 Roadmap: RTX 30-Series Frame Generation
+
+> **Status: proposed—not implemented yet.** The first milestone targets Windows x64, DirectX 12 games that already include a native DLSS-G/Streamline Frame Generation integration.
+
+The proposed integration uses [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) as an external Frame Generation backend for GeForce RTX 30-Series (Ampere) GPUs. DLSS 5 STUDIO would acquire, configure, deploy, detect, and remove the compatibility runtime while retaining its existing one-click backup and restore guarantees.
+
+### Architecture
+
+The projects should remain separate rather than copying GPL-licensed runtime code into this MIT repository. DLSS 5 STUDIO remains the Rust orchestrator; `dlssg_for_sm86` remains an independently versioned third-party payload.
+
+```text
+Rendering route                         Frame Generation backend
+──────────────────────────────────      ─────────────────────────────
+Native DLSS / RenoDX               +    None
+OptiScaler DLSS-NR                 +    RenoDX Ada MFG (RTX 40)
+DLSS 5 Feeder                      +    DLSSG SM86 (RTX 30)
+                                        Standalone RTXMFG
+```
+
+A centralized resolver should choose a backend from the detected GPU architecture, game API, bitness, native FG capability, selected rendering route, and available proxy-DLL slot:
+
+```rust
+pub enum FrameGenBackend {
+    None,
+    RenoDxAda,
+    DlssgSm86,
+    RtxMfg,
+}
+```
+
+### Initial compatibility target
+
+| GPU / game path | Planned result |
+| :--- | :--- |
+| RTX 30 + x64 + D3D12 + native DLSS-G/Streamline FG | DLSSG SM86 backend; 2x, 3x, or 4x UI multiplier |
+| RTX 30 + OptiScaler + native DLSS-G | Supported only when a non-conflicting proxy slot is available |
+| RTX 30 + DX11, Vulkan, 32-bit, or no native FG integration | Unsupported in the first milestone |
+| RTX 40 + supported native FG | Existing RenoDX Ada MFG path remains unchanged |
+
+The UI multiplier must be translated explicitly because the SM86 configuration counts generated frames: `2x → 1`, `3x → 2`, and `4x → 3` for `MaxGeneratedFrames`.
+
+### Implementation plan
+
+1. **Generalize GPU detection**
+   - Replace RTX-40-only gating with `NvidiaArch` detection for Turing, Ampere, Ada, Blackwell, and unknown devices.
+   - Keep the first release intentionally limited to Ampere even if the upstream runtime can support additional architectures.
+
+2. **Centralize Frame Generation capability resolution**
+   - Add `FrameGenBackend` and a single `framegen_capability(game, gpu, route)` decision path used by both the UI and deployer.
+   - Require NVIDIA Ampere, Windows x64, D3D12, and detected native DLSS-G/Streamline FG for the initial SM86 path.
+
+3. **Add an SM86 component module**
+   - Create `src/core/sm86_fg.rs` for payload metadata, configuration generation, and UI-multiplier translation.
+   - Start with conservative settings: optimized mode enabled, automatic compatibility preset, bundled runtime, and ordinary logging.
+   - Keep experimental or artifact-prone upstream diagnostics out of the initial UI.
+
+4. **Acquire and verify a pinned payload**
+   - Extend the downloader and `PayloadBundle` with a pinned `dlssg_for_sm86` release or commit and expected SHA-256 hashes.
+   - Never download mutable files from `main`.
+   - Cache it as a separately versioned third-party component and retain the upstream notices.
+
+5. **Resolve proxy-DLL conflicts safely**
+   - Select the first usable slot in this order: `winmm.dll`, `dbghelp.dll`, `dinput8.dll`, then `version.dll`.
+   - Reject slots owned by the game, another DLSS 5 STUDIO payload, or an unknown third-party mod.
+   - Reserve `dxgi.dll` and `d3d12.dll` as explicit expert fallbacks because they collide with common ReShade and OptiScaler deployments.
+
+6. **Integrate transactional deployment and restore**
+   - Deploy the selected proxy and generated `dlssg_sm86.ini` through the existing journaled installer.
+   - Record the chosen Frame Generation backend and proxy name in the active manifest.
+   - Ensure route changes, backend changes, failed installs, and “Restore originals” all remove introduced files and restore replaced files correctly.
+
+7. **Recognize SM86 payloads explicitly**
+   - Add a strong PE/content recognizer for the SM86 proxy rather than relying on generic Streamline markers.
+   - Include recognized SM86 files in safe cleanup and dirty-install detection.
+
+8. **Expose backend-aware UI**
+   - Present one Frame Generation control while showing the implementation selected for the current GPU and game.
+   - Explain unsupported states instead of silently hiding the feature.
+   - Preserve all current RTX 40 behavior.
+
+9. **Test before widening support**
+   - Add unit tests for architecture detection, capability gating, multiplier conversion, INI generation, proxy selection, conflict rejection, and journal restoration.
+   - Validate the end-to-end path first on representative native DLSS-G D3D12 titles such as Cyberpunk 2077, Black Myth: Wukong, and Final Fantasy VII Rebirth.
+
+### First milestone definition of done
+
+An RTX 30-Series user can select a compatible 64-bit D3D12 game with native DLSS-G, enable 2x/3x/4x Frame Generation through the DLSSG SM86 backend, switch routes safely, and restore the untouched original game files with one click.
+
+DX11, Vulkan, RTX 20-Series exposure, 6x Dynamic MFG, render-path proxy fallbacks, and advanced SM86 tuning are explicitly deferred until this narrow path is stable.
+
+### Licensing and distribution boundary
+
+`dlssg_for_sm86` should be treated as an external third-party runtime, not source-merged into DLSS 5 STUDIO. Before redistribution, the implementation must verify the licenses and redistribution terms for the upstream project, its bundled NVIDIA runtime, and any extracted or modified NVIDIA resources. Required notices should be shipped verbatim, and NVIDIA-derived payloads should not be committed to this repository unless redistribution is confirmed.
+
+---
 ## 📚 Acknowledgements & Third-Party Components
 
 - **DLSS 5 Swapper**: Original UI layout, visual design, and desktop concept ([rakanki911/DLSS5-Swapper](https://github.com/rakanki911/DLSS5-Swapper)).
