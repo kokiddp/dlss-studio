@@ -88,11 +88,16 @@ Run on Windows:
 ```powershell
 cargo check --locked --all-targets
 cargo test --locked --bin dlss-studio
+cargo test --locked --bin dlss-studio sm86_verified_payload_lifecycle -- --ignored --nocapture
 ```
 
 New tests cover GPU classification, API/bitness/native-FG gating, Ada routing,
 multiplier translation, INI preservation, foreign proxy rejection, old-manifest
 compatibility, write-ahead recovery, restore, and backup continuity.
+The final command downloads and verifies the four pinned DLLs (about 120 MB),
+then exercises install, reinstall, rendering/backend switches, and restoration
+in a synthetic game directory. The DLLs are copied as data, never loaded or
+executed. Windows CI runs this separately from the offline unit tests.
 
 Before calling the feature production-ready, test Cyberpunk 2077, Black Myth:
 Wukong, and Final Fantasy VII Rebirth on physical RTX 30 hardware. For each

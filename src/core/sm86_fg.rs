@@ -103,8 +103,7 @@ pub fn configure_ini(base: &str, multiplier: u32) -> Result<String, String> {
     if !(2..=4).contains(&multiplier) {
         return Err("SM86 multiplier ceiling must be 2x, 3x or 4x".into());
     }
-    let mut text = base.to_string();
-    for (section, key, value) in [
+    let values = [
         ("General", "Enabled", "1"),
         ("FrameGeneration", "Optimized", "1"),
         ("Compatibility", "Preset", "Auto"),
@@ -112,7 +111,23 @@ pub fn configure_ini(base: &str, multiplier: u32) -> Result<String, String> {
         ("Logging", "Directory", "dlssg_sm86\\logs"),
         ("Runtime", "Mode", "Bundled"),
         ("Runtime", "CacheDirectory", ""),
-    ] {
+    ];
+    // Remove every existing occurrence of managed keys first: Windows INI
+    // readers differ in how they handle duplicate keys/sections. Updating only
+    // the first occurrence could leave an old 6x ceiling effective at runtime.
+    let mut section = String::new();
+    let newline = if base.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut text = base.lines().filter(|line| {
+        let trimmed = line.trim().trim_start_matches('\u{feff}');
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section = trimmed[1..trimmed.len() - 1].trim().to_string();
+        }
+        if trimmed.starts_with(';') || trimmed.starts_with('#') { return true; }
+        let Some((key, _)) = trimmed.split_once('=') else { return true; };
+        let ceiling = section.eq_ignore_ascii_case("FrameGeneration") && key.trim().eq_ignore_ascii_case("MaxGeneratedFrames");
+        !ceiling && !values.iter().any(|(s, k, _)| section.eq_ignore_ascii_case(s) && key.trim().eq_ignore_ascii_case(k))
+    }).collect::<Vec<_>>().join(newline);
+    for (section, key, value) in values {
         text = set_ini(&text, section, key, value);
     }
     Ok(set_ini(
@@ -205,6 +220,25 @@ mod tests {
         assert!(check_proxy_slots(&dir, &dir).is_err());
         assert!(!is_proxy(&path));
         assert_eq!(fs::read(&path).unwrap(), b"original game DLL Streamline");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn duplicate_managed_ini_keys_cannot_override_the_ceiling() {
+        let ini = configure_ini("[FrameGeneration]\nMaxGeneratedFrames=5\nmaxgeneratedframes=99\n; keep comment\n[FrameGeneration]\nMaxGeneratedFrames=5\n[Custom]\nMaxGeneratedFrames=77\n", 2).unwrap();
+        assert_eq!(ini.matches("MaxGeneratedFrames=1").count(), 1);
+        assert!(!ini.contains("=5"));
+        assert!(!ini.contains("=99"));
+        assert!(ini.contains("MaxGeneratedFrames=77"));
+        assert!(ini.contains("; keep comment"));
+    }
+
+    #[test]
+    fn payload_integrity_rejects_tampered_files() {
+        let dir = std::env::temp_dir().join(format!("sm86-tamper-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("version.dll"), b"modified payload").unwrap();
+        assert!(Sm86Payload { directory: dir.clone() }.verify().unwrap_err().contains("integrity"));
         fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -1088,20 +1088,24 @@ fn deploy_with_framegen(
         .unwrap_or_else(|| opts.exe_path.parent().unwrap_or(&opts.game_dir).to_path_buf());
     crate::core::install_guards::assert_game_closed(&opts.game_dir, Some(&opts.exe_path))?;
     let mut previous_ada_addon = None;
+    // Explicit backends use exactly the UI's policy, re-evaluated on a fresh
+    // scan. The legacy CLI boolean remains compatible with existing callers.
+    if opts.frame_gen_backend.is_some() && backend != FrameGenBackend::None {
+        let gpu = opts.frame_gen_gpu.as_ref().ok_or("Frame Generation requires detected GPU information")?;
+        let mut game = crate::core::scan::scan_game_directory(&opts.game_dir).ok_or("Cannot verify the game's Frame Generation integration")?;
+        game.exe_path = opts.exe_path.clone();
+        game.api = opts.api.clone();
+        game.bitness = crate::core::pe::inspect_pe(&opts.exe_path).ok_or("Cannot verify game executable bitness")?.bitness;
+        let capability = framegen_capability(&game, gpu, route);
+        if capability.backend != backend {
+            return Err(capability.reason.unwrap_or("Requested Frame Generation backend does not match the GPU/game capability").into());
+        }
+    }
     if sm86 {
         let game_root = fs::canonicalize(&opts.game_dir).map_err(|e| e.to_string())?;
         let proxy_root = fs::canonicalize(&mod_root).map_err(|e| e.to_string())?;
         if !proxy_root.starts_with(&game_root) {
             return Err("SM86 proxy directory must resolve inside the game directory".into());
-        }
-        let gpu = opts.frame_gen_gpu.as_ref().ok_or("SM86 requires detected GPU information")?;
-        let mut game = crate::core::scan::scan_game_directory(&opts.game_dir).ok_or("Cannot verify native DLSS-G integration")?;
-        game.exe_path = opts.exe_path.clone();
-        game.api = opts.api.clone();
-        game.bitness = crate::core::pe::inspect_pe(&opts.exe_path).ok_or("Cannot verify game executable bitness")?.bitness;
-        let capability = framegen_capability(&game, gpu, route);
-        if capability.backend != FrameGenBackend::DlssgSm86 {
-            return Err(capability.reason.unwrap_or("SM86 is not supported for this game").into());
         }
         sm86_fg::configure_ini("", opts.mfg_multiplier)?;
         payloads.sm86.as_ref().ok_or("Verified SM86 payload is missing; download it first")?.verify()?;
@@ -2487,6 +2491,84 @@ mod tests {
         assert!(crate::core::journal::read_manifest(&game).is_some());
         assert_eq!(fs::read(game.join("original.cfg")).unwrap(), b"current");
         fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    #[ignore = "Downloads about 120 MB of pinned DLLs; copies them as data without loading them"]
+    fn sm86_verified_payload_lifecycle() {
+        use crate::core::{framegen::FrameGenBackend, gpu::GpuInfo, sm86_fg};
+        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let root = sm86_test_dir("verified-lifecycle");
+        let game = root.join("game");
+        let bin = game.join("bin").join("x64");
+        fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("SyntheticGame.exe");
+        let mut executable = create_mock_pe64();
+        executable.resize(10000, 0);
+        fs::write(&exe, executable).unwrap();
+        let originals = [
+            ("D3D12Core.dll", "original D3D12 runtime"),
+            ("dxgi.dll", "original game graphics library"),
+            ("nvngx_dlss.dll", "original SR runtime"),
+            ("nvngx_dlssg.dll", "original FG runtime"),
+            ("sl.interposer.dll", "original interposer"),
+            ("sl.dlss_g.dll", "original FG plugin"),
+            (sm86_fg::INI_NAME, "; preserve original\n[Custom]\nKeep=1\n"),
+            ("user-mod.dll", "unrelated user data"),
+        ];
+        for (name, contents) in originals { fs::write(bin.join(name), contents).unwrap(); }
+        let mut payloads = PayloadBundle::create_mock(&root.join("payloads"));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        payloads.sm86 = Some(runtime.block_on(sm86_fg::ensure_payload(&mut Vec::new())).unwrap());
+        let mut opts = DeployOptions {
+            game_name: Some("Synthetic SM86 integration test".into()),
+            game_dir: game.clone(), exe_path: exe, api: "DirectX 12".into(),
+            mfg_multiplier: 4, frame_gen_backend: Some(FrameGenBackend::DlssgSm86),
+            frame_gen_gpu: Some(GpuInfo { name: "NVIDIA GeForce RTX 3080".into(), vendor_id: 0x10de, device_id: 0, dedicated_video_memory: 0, is_rtx_40: false }),
+            ..Default::default()
+        };
+        // Preflight must leave the game unchanged when a slot has a foreign owner.
+        fs::write(bin.join("dbghelp.dll"), b"foreign mod").unwrap();
+        assert!(deploy_native_dlss5_with_bundle(&opts, &payloads).is_err());
+        assert!(crate::core::journal::read_manifest(&game).is_none());
+        assert_eq!(fs::read(bin.join("dxgi.dll")).unwrap(), originals[1].1.as_bytes());
+        fs::remove_file(bin.join("dbghelp.dll")).unwrap();
+
+        for deploy in [deploy_native_dlss5_with_bundle, deploy_native_dlss5_with_bundle, deploy_optiscaler_with_bundle, deploy_feeder_with_bundle] {
+            let result = deploy(&opts, &payloads).unwrap();
+            assert!(result.success);
+            for (name, _, hash) in sm86_fg::PROXIES {
+                assert_eq!(crate::core::downloader::compute_sha256(&bin.join(name)).unwrap(), hash);
+            }
+            assert!(!bin.join("renodx-mfgunlock.addon64").exists());
+            assert!(!bin.join("RTXMFG-Universal.json").exists());
+            assert_eq!(fs::read(bin.join("sl.interposer.dll")).unwrap(), originals[4].1.as_bytes());
+            let manifest = crate::core::journal::read_manifest(&game).unwrap();
+            assert_eq!(manifest.frame_gen_backend, Some(FrameGenBackend::DlssgSm86));
+            assert_eq!(manifest.frame_gen_proxies.len(), 4);
+            if manifest.route == "optiscaler" {
+                assert_eq!(get_ini(&fs::read_to_string(bin.join("OptiScaler.ini")).unwrap(), "FrameGen", "External"), Some("true".into()));
+            }
+        }
+        // Switch to Ada, then RTXMFG, then SM86: no two FG backends may coexist.
+        opts.frame_gen_backend = Some(FrameGenBackend::RenoDxAda);
+        assert!(deploy_native_dlss5_with_bundle(&opts, &payloads).is_err(), "Ada backend must reject an Ampere GPU");
+        opts.frame_gen_gpu.as_mut().unwrap().name = "NVIDIA GeForce RTX 4080".into();
+        deploy_native_dlss5_with_bundle(&opts, &payloads).unwrap();
+        for (name, _, _) in sm86_fg::PROXIES { assert!(!bin.join(name).exists()); }
+        assert_eq!(fs::read_to_string(bin.join(sm86_fg::INI_NAME)).unwrap(), originals[6].1);
+        opts.frame_gen_backend = Some(FrameGenBackend::RtxMfg);
+        deploy_optiscaler_with_bundle(&opts, &payloads).unwrap();
+        opts.frame_gen_backend = Some(FrameGenBackend::DlssgSm86);
+        opts.frame_gen_gpu.as_mut().unwrap().name = "NVIDIA GeForce RTX 3080".into();
+        deploy_optiscaler_with_bundle(&opts, &payloads).unwrap();
+        assert!(!bin.join("RTXMFG-Universal.json").exists());
+        crate::core::journal::restore_game(&game).unwrap();
+        for (name, contents) in originals { assert_eq!(fs::read(bin.join(name)).unwrap(), contents.as_bytes(), "Original file was not restored: {name}"); }
+        for (name, _, _) in sm86_fg::PROXIES { assert!(!bin.join(name).exists()); }
+        assert!(!bin.join(sm86_fg::NOTICE_NAME).exists());
+        assert!(!crate::core::journal::has_backup_available(&game));
+        fs::remove_dir_all(root).unwrap();
     }
 
     pub use crate::core::state::STATE_TEST_MUTEX;
