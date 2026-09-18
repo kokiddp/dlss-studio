@@ -71,6 +71,8 @@ third-party notices are retained verbatim in the cache and the game directory.
   SM86 installation errors attempt rollback. If rollback itself fails (for
   example due to a file lock), keep `_DLSS5_Backup` and retry restore before
   another install.
+- Completed installs refuse to delete SM86 proxies changed by another tool.
+  In-progress manifests remain recoverable after an interrupted copy.
 - Reinstallation carries forward original backups and added-file ownership.
   Disabling SM86 removes its managed proxies/configuration/notices and restores
   any original configuration. A proxy changed by another tool blocks switching.

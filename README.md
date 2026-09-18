@@ -2,7 +2,7 @@
 
 > **A blisteringly fast, low-memory utility built in pure native Rust to enable and unlock DLSS, Neural Reconstruction, and 4x Frame Generation across your PC games while preserving pristine graphical fidelity.**
 >
-> _Supports all **GeForce RTX GPUs (20, 30, and 40-Series)** for DLSS upscaling and OptiScaler Pre-SR, with **exclusive 4x Multi-Frame Generation unlocking for RTX 40-Series cards**._
+> _Supports **GeForce RTX GPUs (20, 30, and 40-Series)** for DLSS upscaling and OptiScaler Pre-SR, **4x Multi-Frame Generation unlocking for RTX 40-Series**, and **experimental RTX 30-Series Frame Generation** in compatible x64/D3D12 games with native DLSS-G._
 
 [![Version](https://img.shields.io/badge/version-1.0.5-orange.svg)](#)
 [![Platform](<https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20(64--bit)-blue.svg>)](#)
@@ -98,7 +98,9 @@ Scans and organizes your games automatically without manual configuration:
   - Any DirectX 11, DirectX 12, or Vulkan compatible GPU.
   - _For DLSS Super Resolution_: NVIDIA GeForce RTX 20/30/40/50-Series.
   - _For 4x Multi-Frame Generation Unlock_: NVIDIA GeForce RTX 40-Series (Ada Lovelace) GPU.
+  - _For experimental DLSSG SM86 Frame Generation_: NVIDIA GeForce RTX 30-Series (Ampere), a 64-bit D3D12 executable, and the game's original DLSS-G integration. See [RTX 30 setup](docs/RTX30-SM86.md).
 - **Storage**: ~15 MB free space.
+  - The optional SM86 proxy set requires about 115 MiB in the component cache and another 115 MiB per installed game, plus the upstream runtime's extracted bundle cache.
 
 ---
 
@@ -229,6 +231,7 @@ DX11, Vulkan, RTX 20-Series exposure, 6x Dynamic MFG, render-path proxy fallback
 ---
 ## 📚 Acknowledgements & Third-Party Components
 
+- **DLSSG for SM86**: Experimental external DLSS-G compatibility runtime for RTX 30-Series in this fork ([sdli1995/dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86)). Downloaded from a pinned upstream commit with its third-party notices; not bundled into Studio's executable.
 - **DLSS 5 Swapper**: Original UI layout, visual design, and desktop concept ([rakanki911/DLSS5-Swapper](https://github.com/rakanki911/DLSS5-Swapper)).
 - **dgVoodoo 2**: Legacy DirectX 1–9 to Direct3D 11/12 graphics wrapper by **Dege** ([dege-diosg/dgVoodoo2](https://github.com/dege-diosg/dgVoodoo2)).
 - **DLSS 5 Feeder**: Universal ReShade frame interception pipeline for non-DLSS and non-DX12 titles by **jlrouzies-fr** ([jlrouzies-fr/DLSS5-Feeder](https://github.com/jlrouzies-fr/DLSS5-Feeder)).

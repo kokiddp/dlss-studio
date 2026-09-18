@@ -1126,7 +1126,7 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
     let mut installed_route = None;
     if let Some(manifest) = crate::core::journal::read_manifest(dir) {
         if manifest.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
-            mfg_addon = !manifest.frame_gen_proxies.is_empty() && manifest.frame_gen_proxies.iter().all(|rel| dir.join(rel).is_file());
+            mfg_addon = !manifest.deployment_in_progress && !manifest.frame_gen_proxies.is_empty() && manifest.frame_gen_proxies.iter().all(|rel| dir.join(rel).is_file());
         }
         if !manifest.route.is_empty() {
             installed_route = Some(manifest.route.clone());
@@ -1925,6 +1925,7 @@ mod tests {
         fs::create_dir_all(&bdir).unwrap();
 
         let manifest = crate::core::journal::ActiveManifest {
+            deployment_in_progress: false,
             frame_gen_backend: None,
             frame_gen_proxies: Vec::new(),
             version: 1,
@@ -2466,4 +2467,3 @@ mod tests {
         }
     }
 }
-

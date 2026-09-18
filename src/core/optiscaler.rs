@@ -1153,6 +1153,7 @@ fn deploy_with_framegen(
         }
         result.log_lines.push(format!("[SM86] Enabled {}x ceiling; select DLSS Frame Generation in the game. Actual multiplier is game-dependent.", opts.mfg_multiplier));
     }
+    manifest.deployment_in_progress = false;
     if let Err(error) = save_manifest(&opts.game_dir, &manifest) {
         return Err(if sm86 { rollback_sm86(&opts.game_dir, error.to_string()) } else { error.to_string() });
     }
@@ -1282,6 +1283,7 @@ fn deploy_optiscaler_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Re
         .unwrap_or_else(|_| opts.exe_path.file_name().unwrap_or_default().to_string_lossy().to_string());
 
     let mut manifest = ActiveManifest {
+        deployment_in_progress: opts.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86),
         frame_gen_backend: opts.frame_gen_backend,
         frame_gen_proxies: Vec::new(),
         version: 1,
@@ -1472,6 +1474,7 @@ fn deploy_native_dlss5_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> 
         .unwrap_or_else(|_| opts.exe_path.file_name().unwrap_or_default().to_string_lossy().to_string());
 
     let mut manifest = ActiveManifest {
+        deployment_in_progress: opts.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86),
         frame_gen_backend: opts.frame_gen_backend,
         frame_gen_proxies: Vec::new(),
         version: 1,
@@ -1872,6 +1875,7 @@ fn deploy_feeder_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result
     let bitness = crate::core::pe::inspect_pe(&opts.exe_path).map(|p| p.bitness).unwrap_or(64);
 
     let mut manifest = ActiveManifest {
+        deployment_in_progress: opts.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86),
         frame_gen_backend: opts.frame_gen_backend,
         frame_gen_proxies: Vec::new(),
         version: 1,
@@ -2361,6 +2365,7 @@ mod tests {
         let opts = DeployOptions { game_dir: game.clone(), mfg_multiplier: 4, ..Default::default() };
         let mut manifest = ActiveManifest {
             frame_gen_backend: Some(FrameGenBackend::DlssgSm86),
+            deployment_in_progress: true,
             backup_prefix: Some("originals/sm86-test".into()),
             ..Default::default()
         };
@@ -2429,6 +2434,7 @@ mod tests {
             added: vec!["version.dll".into()], ..Default::default()
         }).unwrap();
         assert!(remove_managed_sm86(&game).is_err());
+        assert!(crate::core::journal::restore_game(&game).is_err());
         assert_eq!(fs::read(game.join("version.dll")).unwrap(), b"another mod");
         fs::remove_dir_all(game).unwrap();
     }
@@ -2505,6 +2511,7 @@ mod tests {
         let exe = bin.join("SyntheticGame.exe");
         let mut executable = create_mock_pe64();
         executable.resize(10000, 0);
+        executable[1000..1017].copy_from_slice(b"D3D12CreateDevice");
         fs::write(&exe, executable).unwrap();
         let originals = [
             ("D3D12Core.dll", "original D3D12 runtime"),
@@ -2563,6 +2570,10 @@ mod tests {
         opts.frame_gen_gpu.as_mut().unwrap().name = "NVIDIA GeForce RTX 3080".into();
         deploy_optiscaler_with_bundle(&opts, &payloads).unwrap();
         assert!(!bin.join("RTXMFG-Universal.json").exists());
+        fs::write(bin.join("version.dll"), b"changed externally").unwrap();
+        assert!(crate::core::journal::restore_game(&game).is_err());
+        assert_eq!(fs::read(bin.join("version.dll")).unwrap(), b"changed externally");
+        fs::copy(payloads.sm86.as_ref().unwrap().directory.join("version.dll"), bin.join("version.dll")).unwrap();
         crate::core::journal::restore_game(&game).unwrap();
         for (name, contents) in originals { assert_eq!(fs::read(bin.join(name)).unwrap(), contents.as_bytes(), "Original file was not restored: {name}"); }
         for (name, _, _) in sm86_fg::PROXIES { assert!(!bin.join(name).exists()); }

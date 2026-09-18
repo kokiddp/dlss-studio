@@ -30,6 +30,10 @@ pub struct ManifestGame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveManifest {
+    /// True until the complete SM86 install is committed. Partial writes can
+    /// then be rolled back; completed installs protect externally changed DLLs.
+    #[serde(default)]
+    pub deployment_in_progress: bool,
     #[serde(default)]
     pub frame_gen_backend: Option<crate::core::framegen::FrameGenBackend>,
     #[serde(default)]
@@ -59,6 +63,7 @@ fn default_manifest_version() -> u32 { 1 }
 impl Default for ActiveManifest {
     fn default() -> Self {
         Self {
+            deployment_in_progress: false,
             frame_gen_backend: None,
             frame_gen_proxies: Vec::new(),
             version: 1,
@@ -425,6 +430,17 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
     }
 
     let bdir = backup_dir(game_dir);
+
+    if manifest.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86)
+        && !manifest.deployment_in_progress
+    {
+        for rel in &manifest.frame_gen_proxies {
+            let path = game_dir.join(rel);
+            if path.exists() && !crate::core::pe::is_dlssg_sm86_proxy(&path) {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("SM86 proxy changed externally: {}. Resolve the conflict before restoring.", path.display())));
+            }
+        }
+    }
 
     // A missing original is an error, not a successful restore. Leave the
     // active manifest intact so recovery can be retried.
