@@ -179,7 +179,24 @@ pub fn save_manifest(game_dir: &Path, manifest: &ActiveManifest) -> std::io::Res
     file.write_all(&bytes)?;
     file.sync_all()?;
     drop(file);
-    fs::rename(&temporary, bdir.join("manifest.json"))?;
+    let destination = bdir.join("manifest.json");
+    if let Err(err) = fs::rename(&temporary, &destination) {
+        #[cfg(windows)]
+        {
+            if err.kind() == std::io::ErrorKind::AlreadyExists && destination.exists() {
+                fs::remove_file(&destination)?;
+                fs::rename(&temporary, &destination)?;
+            } else {
+                let _ = fs::remove_file(&temporary);
+                return Err(err);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = fs::remove_file(&temporary);
+            return Err(err);
+        }
+    }
     Ok(())
 }
 
@@ -756,6 +773,34 @@ mod tests {
         fs::create_dir_all(backup_dir(&temp)).unwrap();
         fs::write(&m_path, b"invalid-json").unwrap();
         assert!(read_manifest(&temp).is_none());
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_save_manifest_can_replace_existing_file() {
+        let temp = std::env::temp_dir().join(format!(
+            "test_journal_save_manifest_replace_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+
+        let first = ActiveManifest {
+            route: "optiscaler".to_string(),
+            ..Default::default()
+        };
+        save_manifest(&temp, &first).unwrap();
+        assert_eq!(read_manifest(&temp).unwrap().route, "optiscaler");
+
+        let second = ActiveManifest {
+            route: "native".to_string(),
+            ..Default::default()
+        };
+        save_manifest(&temp, &second).unwrap();
+        assert_eq!(read_manifest(&temp).unwrap().route, "native");
 
         let _ = fs::remove_dir_all(&temp);
     }

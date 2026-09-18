@@ -1126,7 +1126,12 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
     let mut installed_route = None;
     if let Some(manifest) = crate::core::journal::read_manifest(dir) {
         if manifest.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
-            mfg_addon = !manifest.deployment_in_progress && !manifest.frame_gen_proxies.is_empty() && manifest.frame_gen_proxies.iter().all(|rel| dir.join(rel).is_file());
+            mfg_addon = !manifest.deployment_in_progress
+                && !manifest.frame_gen_proxies.is_empty()
+                && manifest.frame_gen_proxies.iter().all(|rel| {
+                    let path = dir.join(rel);
+                    path.is_file() && crate::core::sm86_fg::is_proxy(&path)
+                });
         }
         if !manifest.route.is_empty() {
             installed_route = Some(manifest.route.clone());

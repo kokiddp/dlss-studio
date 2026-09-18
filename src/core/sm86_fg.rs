@@ -141,8 +141,19 @@ pub fn configure_ini(base: &str, multiplier: u32) -> Result<String, String> {
 /// Strong recognition: only the exact pinned DLLs are automatically removable.
 /// A string such as "Streamline" alone must never authorize deleting a DLL.
 pub fn is_proxy(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
     downloader::compute_sha256(path)
-        .map(|hash| PROXIES.iter().any(|p| p.2 == hash))
+        .map(|hash| is_proxy_hash(name, &hash))
+        .unwrap_or(false)
+}
+
+fn is_proxy_hash(installed_name: &str, hash: &str) -> bool {
+    PROXIES
+        .iter()
+        .find(|(name, _, _)| name.eq_ignore_ascii_case(installed_name))
+        .map(|(_, _, expected)| *expected == hash)
         .unwrap_or(false)
 }
 
@@ -165,7 +176,10 @@ pub fn check_proxy_slots(mod_root: &Path, game_dir: &Path, previous_rtxmfg: Opti
         };
         let managed = previous
             .as_ref()
-            .map(|m| m.added.iter().any(|rel| game_dir.join(rel) == path))
+            .map(|m| {
+                m.added.iter().any(|rel| game_dir.join(rel) == path)
+                    || m.replaced.iter().any(|item| game_dir.join(&item.rel) == path)
+            })
             .unwrap_or(false);
         let prior_rtxmfg = name == "version.dll"
             && previous
@@ -267,5 +281,16 @@ mod tests {
         fs::write(dir.join("version.dll"), b"modified payload").unwrap();
         assert!(Sm86Payload { directory: dir.clone() }.verify().unwrap_err().contains("integrity"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn proxy_hash_must_match_installed_name() {
+        let version_hash = PROXIES
+            .iter()
+            .find(|(name, _, _)| *name == "version.dll")
+            .map(|(_, _, hash)| *hash)
+            .unwrap();
+        assert!(is_proxy_hash("version.dll", version_hash));
+        assert!(!is_proxy_hash("winmm.dll", version_hash));
     }
 }

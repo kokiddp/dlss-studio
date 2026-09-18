@@ -143,9 +143,33 @@ fn main() {
     if args.len() > 2 && args[1] == "--deploy-optiscaler" {
         let game_dir = std::path::PathBuf::from(&args[2]);
         if let Some(game) = core::scan::scan_game_directory(&game_dir) {
+            let detected_gpus = core::gpu::detect_gpus();
+            let Some(frame_gen_gpu) = detected_gpus
+                .iter()
+                .find(|gpu| gpu.vendor_id == 0x10de)
+                .cloned()
+                .or_else(|| detected_gpus.first().cloned())
+            else {
+                eprintln!("Deploy error: Frame Generation requires detected GPU information");
+                return;
+            };
+            let capability = core::framegen::framegen_capability(
+                &game,
+                &frame_gen_gpu,
+                core::install_routes::InstallRoute::OptiScaler,
+            );
+            if capability.backend == core::framegen::FrameGenBackend::None {
+                eprintln!(
+                    "Deploy error: {}",
+                    capability
+                        .reason
+                        .unwrap_or("Requested Frame Generation backend is not supported for this game/GPU")
+                );
+                return;
+            }
             let opts = core::optiscaler::DeployOptions {
-                frame_gen_backend: None,
-                frame_gen_gpu: None,
+                frame_gen_backend: Some(capability.backend),
+                frame_gen_gpu: Some(frame_gen_gpu),
                 game_name: Some(game.name.clone()),
                 game_dir: game.dir.clone(),
                 exe_path: game.exe_path.clone(),
