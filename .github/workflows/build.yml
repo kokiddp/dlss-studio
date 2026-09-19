@@ -143,17 +143,30 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.tag }}
+          RELEASE_TITLE: ${{ steps.release_meta.outputs.title }}
+          RELEASE_BODY_FILE: ${{ steps.release_meta.outputs.body_file }}
+          RELEASE_DRAFT: ${{ inputs.draft }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          TAG="${{ steps.release_meta.outputs.tag }}"
-          TITLE="${{ steps.release_meta.outputs.title }}"
-          BODY_FILE="${{ steps.release_meta.outputs.body_file }}"
+          set -euo pipefail
+          release_flags=()
+          if [[ "$RELEASE_DRAFT" == "true" ]]; then
+            release_flags+=(--draft)
+          fi
+          if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
+            release_flags+=(--prerelease)
+          fi
+          if [[ "$RELEASE_DRAFT" == "true" || "$RELEASE_PRERELEASE" == "true" ]]; then
+            release_flags+=(--latest=false)
+          else
+            release_flags+=(--latest)
+          fi
 
-          # Delete any existing draft/failed release for this tag if present
-          gh release delete "$TAG" --yes 2>/dev/null || true
-
-          gh release create "$TAG" \
+          # Fail if this release exists; never delete a published release.
+          gh release create "$RELEASE_TAG" \
             target/release/dlss-studio-v*-setup.exe \
             target/release/dlss-studio-v*-portable.exe \
-            --title "$TITLE" \
-            --notes-file "$BODY_FILE" \
-            --latest
+            --title "$RELEASE_TITLE" \
+            --notes-file "$RELEASE_BODY_FILE" \
+            "${release_flags[@]}"

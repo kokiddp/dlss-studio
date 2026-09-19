@@ -1075,6 +1075,7 @@ fn deploy_with_framegen(
     deploy: fn(&DeployOptions, &PayloadBundle) -> Result<DeployResult, String>,
 ) -> Result<DeployResult, String> {
     use crate::core::{framegen::{FrameGenBackend, framegen_capability}, sm86_fg};
+    crate::core::journal::read_manifest_checked(&opts.game_dir).map_err(|e| e.to_string())?;
     let backend = opts.frame_gen_backend.unwrap_or(if !opts.mfg_unlock {
         FrameGenBackend::None
     } else if route == crate::core::install_routes::InstallRoute::OptiScaler {
@@ -1137,6 +1138,7 @@ fn deploy_with_framegen(
     let transactional = sm86 || crate::core::journal::read_manifest(&opts.game_dir)
         .map(|m| m.frame_gen_backend == Some(FrameGenBackend::DlssgSm86)).unwrap_or(false);
     if transactional {
+        check_cleanup_directory_ownership(&opts.game_dir, &mod_root)?;
         crate::core::install_checkpoint::begin(&opts.game_dir).map_err(|e| e.to_string())?;
     }
     let outcome = (|| -> Result<DeployResult, String> {
@@ -1194,6 +1196,37 @@ fn rollback_sm86(game_dir: &Path, error: String) -> String {
         Ok(_) => format!("{error}. Installation rolled back; original files restored."),
         Err(rollback) => format!("{error}. Rollback failed: {rollback}. Keep _DLSS5_Backup and use Restore originals before retrying."),
     }
+}
+
+// Legacy renderer cleanup removes entire asset directories. For SM86
+// transactions, require ownership of every file before allowing that cleanup.
+fn check_cleanup_directory_ownership(game_dir: &Path, mod_root: &Path) -> Result<(), String> {
+    let manifest = crate::core::journal::read_manifest_checked(game_dir).map_err(|e| e.to_string())?;
+    let mut directories = Vec::new();
+    for root in [game_dir, mod_root] {
+        for name in ["reshade-shaders", "host64", "OptiScaler"] { directories.push(root.join(name)); }
+    }
+    if let Some(ref manifest) = manifest {
+        directories.extend(manifest.added_dirs.iter().map(|rel| game_dir.join(rel)));
+    }
+    for directory in directories {
+        if !directory.exists() { continue; }
+        for entry in walkdir::WalkDir::new(&directory).follow_links(false) {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.file_type().is_symlink() {
+                return Err(format!("Cleanup directory contains a symlink: {}. Resolve it before installing.", entry.path().display()));
+            }
+            if !entry.file_type().is_file() { continue; }
+            let owned = manifest.as_ref().map(|m| {
+                m.added.iter().any(|rel| game_dir.join(rel) == entry.path())
+                    || m.replaced.iter().any(|item| game_dir.join(&item.rel) == entry.path())
+            }).unwrap_or(false);
+            if !owned {
+                return Err(format!("Unmanaged file would be removed by renderer cleanup: {}. Move it out of the managed directory before installing; no files were changed.", entry.path().display()));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn check_sm86_addon_conflicts(game_dir: &Path, mod_root: &Path, expected: Option<&Path>) -> Result<Option<PathBuf>, String> {
@@ -2364,6 +2397,40 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sm86-{name}-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn corrupt_journal_blocks_deployment_before_renderer_mutations() {
+        let game = sm86_test_dir("corrupt-deploy");
+        fs::create_dir_all(game.join("_DLSS5_Backup")).unwrap();
+        fs::write(game.join("_DLSS5_Backup/manifest.json"), b"{broken").unwrap();
+        fs::write(game.join("dxgi.dll"), b"keep existing renderer").unwrap();
+        let payloads = PayloadBundle::create_mock(&game.join("payloads"));
+        let opts = DeployOptions { game_dir: game.clone(), ..Default::default() };
+        fn must_not_deploy(_: &DeployOptions, _: &PayloadBundle) -> Result<DeployResult, String> {
+            panic!("renderer must not run with an invalid journal");
+        }
+        let error = deploy_with_framegen(&opts, &payloads, crate::core::install_routes::InstallRoute::OptiScaler, must_not_deploy).unwrap_err();
+        assert!(error.contains("Invalid installation journal"));
+        assert_eq!(fs::read(game.join("dxgi.dll")).unwrap(), b"keep existing renderer");
+        assert_eq!(fs::read(game.join("_DLSS5_Backup/manifest.json")).unwrap(), b"{broken");
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn sm86_route_cleanup_rejects_unmanaged_directory_contents() {
+        let game = sm86_test_dir("directory-ownership");
+        fs::create_dir_all(game.join("reshade-shaders")).unwrap();
+        fs::write(game.join("reshade-shaders/managed.fx"), b"managed").unwrap();
+        save_manifest(&game, &ActiveManifest {
+            added: vec!["reshade-shaders/managed.fx".into()],
+            added_dirs: vec!["reshade-shaders".into()], ..Default::default()
+        }).unwrap();
+        assert!(check_cleanup_directory_ownership(&game, &game).is_ok());
+        fs::write(game.join("reshade-shaders/user.fx"), b"user data").unwrap();
+        assert!(check_cleanup_directory_ownership(&game, &game).is_err());
+        assert_eq!(fs::read(game.join("reshade-shaders/user.fx")).unwrap(), b"user data");
+        fs::remove_dir_all(game).unwrap();
     }
 
     #[test]

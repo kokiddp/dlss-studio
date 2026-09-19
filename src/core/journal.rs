@@ -127,14 +127,21 @@ pub fn has_backup_available(game_dir: &Path) -> bool {
 }
 
 pub fn read_manifest(game_dir: &Path) -> Option<ActiveManifest> {
-    let bdir = backup_dir(game_dir);
-    let manifest_file = bdir.join("manifest.json");
-    if let Ok(bytes) = fs::read(&manifest_file) {
-        if let Ok(m) = serde_json::from_slice::<ActiveManifest>(&bytes) {
-            return Some(m);
-        }
+    read_manifest_checked(game_dir).ok().flatten()
+}
+
+/// Mutation paths must distinguish an absent journal from an unreadable or
+/// malformed one. Only a genuinely absent journal permits untracked cleanup.
+pub(crate) fn read_manifest_checked(game_dir: &Path) -> std::io::Result<Option<ActiveManifest>> {
+    let path = backup_dir(game_dir).join("manifest.json");
+    match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData,
+                format!("Invalid installation journal {}: {error}. Preserve _DLSS5_Backup and repair the journal before continuing.", path.display()))
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
-    None
 }
 
 pub fn read_latest_done_manifest(game_dir: &Path) -> Option<ActiveManifest> {
@@ -427,7 +434,7 @@ pub(crate) fn restore_failed_install(game_dir: &Path) -> std::io::Result<bool> {
 
 fn restore_game_impl(game_dir: &Path, rollback: bool) -> std::io::Result<bool> {
     crate::core::logger::info("restore", &format!("Initiating restore for game: {}", game_dir.display()));
-    let manifest = match read_manifest(game_dir) {
+    let manifest = match read_manifest_checked(game_dir)? {
         Some(m) => m,
         None => {
             // Fallback: clean untracked mods if no manifest is found
@@ -502,10 +509,22 @@ fn restore_game_impl(game_dir: &Path, rollback: bool) -> std::io::Result<bool> {
         }
     }
 
-    for rel in manifest.added_dirs.iter().rev() {
+    let mut added_dirs = manifest.added_dirs.iter().collect::<Vec<_>>();
+    added_dirs.sort_by_key(|rel| std::cmp::Reverse(Path::new(rel).components().count()));
+    for rel in added_dirs {
         let target_dir = resolve_target_path(game_dir, rel);
         if target_dir.exists() {
-            fs::remove_dir_all(&target_dir)?;
+            if rollback || manifest.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
+                // Tracked files were removed individually. A nonempty directory
+                // may contain files added by the user after installation.
+                match fs::remove_dir(&target_dir) {
+                    Ok(()) => {},
+                    Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => continue,
+                    Err(error) => return Err(error),
+                }
+            } else {
+                fs::remove_dir_all(&target_dir)?;
+            }
             crate::core::logger::debug("restore", &format!("Removed mod directory: {}", target_dir.display()));
         }
     }
@@ -650,6 +669,39 @@ mod tests {
         assert!(read_manifest(&temp_dir).is_some());
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn corrupt_manifest_blocks_restore_without_cleaning_files() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let game = std::env::temp_dir().join(format!("journal-corrupt-{stamp}"));
+        fs::create_dir_all(game.join("_DLSS5_Backup")).unwrap();
+        fs::write(game.join("_DLSS5_Backup/manifest.json"), b"{broken").unwrap();
+        fs::write(game.join("ReShade.ini"), b"keep user settings").unwrap();
+        assert_eq!(restore_game(&game).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(game.join("ReShade.ini")).unwrap(), b"keep user settings");
+        assert_eq!(fs::read(game.join("_DLSS5_Backup/manifest.json")).unwrap(), b"{broken");
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn sm86_restore_preserves_user_files_inside_managed_directories() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let game = std::env::temp_dir().join(format!("journal-user-files-{stamp}"));
+        fs::create_dir_all(game.join("reshade-shaders")).unwrap();
+        fs::write(game.join("reshade-shaders/installed.fx"), b"managed").unwrap();
+        fs::write(game.join("reshade-shaders/user.fx"), b"user file").unwrap();
+        save_manifest(&game, &ActiveManifest {
+            frame_gen_backend: Some(crate::core::framegen::FrameGenBackend::DlssgSm86),
+            added: vec!["reshade-shaders/installed.fx".into()],
+            added_dirs: vec!["reshade-shaders".into()],
+            ..Default::default()
+        }).unwrap();
+        restore_game(&game).unwrap();
+        assert!(!game.join("reshade-shaders/installed.fx").exists());
+        assert_eq!(fs::read(game.join("reshade-shaders/user.fx")).unwrap(), b"user file");
+        assert!(!has_backup_available(&game));
+        fs::remove_dir_all(game).unwrap();
     }
 
     #[test]

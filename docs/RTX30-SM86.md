@@ -77,6 +77,13 @@ third-party notices are retained verbatim in the cache and the game directory.
   files. If rollback itself fails (for
   example due to a file lock), keep `_DLSS5_Backup` and retry restore before
   another install.
+- An unreadable or malformed active journal blocks installation and restore;
+  it is never treated as permission to clean up untracked files. Preserve
+  `_DLSS5_Backup` and repair the journal before retrying.
+- SM86 restore removes tracked files and only empty managed directories. Files
+  added by the user inside those directories are retained. Installing or
+  switching routes refuses unmanaged files in renderer cleanup directories;
+  move those files elsewhere before proceeding.
 - Completed installs refuse to delete SM86 proxies changed by another tool.
   In-progress manifests remain recoverable after an interrupted copy.
 - Reinstallation carries forward original backups and added-file ownership.
@@ -125,3 +132,13 @@ Also repeat existing RTX 40 workflows to verify behavior has not regressed.
 
 Deferred: RTX 20, DX11, Vulkan, 6x, render-path proxies, title-specific single
 slots, advanced tuning, and translations of the new experimental UI text.
+
+## Release readiness
+
+Passing CI does not establish production readiness. In addition to the GPU/game
+matrix above, a stable release requires a release build and installer/portable
+smoke tests on clean Windows systems, recovery checks with file locks and low
+disk space, and resolution of the applicable third-party distribution terms.
+The existing release workflow supports unpublished drafts and published
+prereleases; these options are honored and neither is marked as the latest
+stable release. It refuses to replace an existing release automatically.

@@ -49,7 +49,7 @@ pub fn begin(game: &Path) -> io::Result<bool> {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists,
             "An interrupted installation needs recovery. Use Restore originals before installing again."));
     }
-    let Some(previous) = journal::read_manifest(game) else { return Ok(false); };
+    let Some(previous) = journal::read_manifest_checked(game)? else { return Ok(false); };
     if previous.deployment_in_progress {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
             "An incomplete installation needs Restore originals before installing again."));
@@ -133,7 +133,7 @@ pub fn recover(game: &Path) -> io::Result<()> {
             return Err(io::Error::new(io::ErrorKind::NotFound, "Previous-installation backup is missing"));
         }
     }
-    if let Some(current) = journal::read_manifest(game) {
+    if let Some(current) = journal::read_manifest_checked(game)? {
         if current.backup_prefix != checkpoint.previous.backup_prefix {
             journal::restore_failed_install(game)?;
         }
@@ -247,6 +247,26 @@ mod tests {
         assert!(marker.exists());
         assert_eq!(fs::read(game.join("game.dll")).unwrap(), b"previous renderer");
         fs::write(saved, b"previous user settings").unwrap();
+        recover(&game).unwrap();
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn corrupt_journal_blocks_checkpoint_creation_and_recovery() {
+        let game = fixture();
+        let manifest = journal::backup_dir(&game).join("manifest.json");
+        let valid = fs::read(&manifest).unwrap();
+        fs::write(&manifest, b"{broken").unwrap();
+        assert!(begin(&game).is_err());
+        assert!(!is_pending(&game));
+        fs::write(&manifest, &valid).unwrap();
+        begin(&game).unwrap();
+        fs::write(&manifest, b"{broken").unwrap();
+        fs::write(game.join("managed.ini"), b"current contents").unwrap();
+        assert!(recover(&game).is_err());
+        assert!(is_pending(&game));
+        assert_eq!(fs::read(game.join("managed.ini")).unwrap(), b"current contents");
+        fs::write(&manifest, valid).unwrap();
         recover(&game).unwrap();
         fs::remove_dir_all(game).unwrap();
     }
