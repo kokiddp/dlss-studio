@@ -17,5 +17,5 @@ jobs:
         run: cargo check --locked --all-targets
       - name: Run tests without game payload downloads
         run: cargo test --locked --bin dlss-studio
-      - name: Verify pinned SM86 payload and complete deployment lifecycle
+      - name: Verify SM86 0.3.3 upgrade and 0.3.4 deployment lifecycle
         run: cargo test --locked --bin dlss-studio sm86_verified_payload_lifecycle -- --ignored --nocapture

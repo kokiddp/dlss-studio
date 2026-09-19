@@ -507,8 +507,15 @@ impl PayloadBundle {
 }
 
 /// Embedded ReShade Companion In-Game Overlay Add-on (dlss5-lab-overlay.addon64)
-/// Enables 100% self-contained single-file portable execution without external loose files.
-pub const EMBEDDED_OVERLAY_ADDON: &[u8] = include_bytes!("../../assets/dlss5-lab-overlay.addon64");
+/// Deflated at build-time to save ~540 KB from the binary; unpacked on demand to AppData components.
+pub const EMBEDDED_OVERLAY_ADDON_DEFLATED: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/dlss5-lab-overlay.addon64.deflate"));
+pub const EXPECTED_OVERLAY_ADDON_LEN: u64 = 868_352;
+
+pub fn decompress_embedded_overlay_addon() -> Vec<u8> {
+    miniz_oxide::inflate::decompress_to_vec(EMBEDDED_OVERLAY_ADDON_DEFLATED)
+        .expect("Failed to decompress embedded dlss5-lab-overlay.addon64")
+}
 
 /// Verifies that a discovered overlay add-on binary is a valid 64-bit ReShade addon payload
 fn is_native_overlay_addon(path: &Path) -> bool {
@@ -525,16 +532,17 @@ fn is_native_overlay_addon(path: &Path) -> bool {
 
 /// Locates or materializes the DLSS 5 Studio In-Game Overlay addon (dlss5-lab-overlay.addon64)
 pub fn find_overlay_addon_payload() -> Option<PathBuf> {
-    // 1. First priority: ensure AppData components contains a fresh, verified copy of EMBEDDED_OVERLAY_ADDON
+    // 1. First priority: ensure AppData components contains a fresh, verified copy of the overlay addon
     let appdata_comp = crate::core::state::get_appdata_dir().join("components");
     let target = appdata_comp.join("dlss5-lab-overlay.addon64");
     let target_needs_write = match fs::metadata(&target) {
-        Ok(meta) => meta.len() != EMBEDDED_OVERLAY_ADDON.len() as u64,
+        Ok(meta) => meta.len() != EXPECTED_OVERLAY_ADDON_LEN,
         Err(_) => true,
     };
     if target_needs_write {
         let _ = fs::create_dir_all(&appdata_comp);
-        let _ = fs::write(&target, EMBEDDED_OVERLAY_ADDON);
+        let decompressed = decompress_embedded_overlay_addon();
+        let _ = fs::write(&target, &decompressed);
     }
 
     let mut candidates = Vec::new();
@@ -2626,6 +2634,35 @@ mod tests {
         assert!(crate::core::journal::read_manifest(&game).is_none());
         assert_eq!(fs::read(bin.join("dxgi.dll")).unwrap(), originals[1].1.as_bytes());
         fs::remove_file(bin.join("dbghelp.dll")).unwrap();
+
+        // Upgrade a real 0.3.3 installation. Legacy hashes remain recognized
+        // for ownership/recovery, but cannot be supplied as a new payload.
+        deploy_native_dlss5_with_bundle(&opts, &payloads).unwrap();
+        let legacy = root.join("legacy-payload");
+        for (name, source, hash) in sm86_fg::LEGACY_PROXIES {
+            let url = format!("https://raw.githubusercontent.com/sdli1995/dlssg_for_sm86/{}/{source}", sm86_fg::LEGACY_RELEASE_COMMIT);
+            runtime.block_on(crate::core::downloader::download_file_with_sha256(&url, &legacy.join(name), hash)).unwrap();
+            fs::copy(legacy.join(name), bin.join(name)).unwrap();
+            assert!(sm86_fg::is_proxy(&bin.join(name)));
+        }
+        assert!(sm86_fg::Sm86Payload { directory: legacy }.verify().is_err());
+        let legacy_ini = sm86_fg::configure_ini(originals[6].1, 2).unwrap();
+        fs::write(bin.join(sm86_fg::INI_NAME), &legacy_ini).unwrap();
+        let legacy_manifest = fs::read(crate::core::journal::backup_dir(&game).join("manifest.json")).unwrap();
+        assert!(crate::core::scan::scan_game_directory(&game).unwrap().mfg_unlock_installed);
+        fn fail_during_version_upgrade(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
+            deploy_native_dlss5_inner(opts, payloads)?;
+            let root = opts.exe_path.parent().unwrap();
+            fs::copy(payloads.sm86.as_ref().unwrap().directory.join("version.dll"), root.join("version.dll")).unwrap();
+            Err("Simulated interruption during SM86 version upgrade".into())
+        }
+        let upgrade_error = deploy_with_framegen(&opts, &payloads, crate::core::install_routes::InstallRoute::Native, fail_during_version_upgrade).unwrap_err();
+        assert!(upgrade_error.contains("previous installation restored"), "{upgrade_error}");
+        for (name, _, hash) in sm86_fg::LEGACY_PROXIES {
+            assert_eq!(crate::core::downloader::compute_sha256(&bin.join(name)).unwrap(), hash);
+        }
+        assert_eq!(fs::read_to_string(bin.join(sm86_fg::INI_NAME)).unwrap(), legacy_ini);
+        assert_eq!(fs::read(crate::core::journal::backup_dir(&game).join("manifest.json")).unwrap(), legacy_manifest);
 
         for deploy in [deploy_native_dlss5_with_bundle, deploy_native_dlss5_with_bundle, deploy_optiscaler_with_bundle, deploy_feeder_with_bundle] {
             let result = deploy(&opts, &payloads).unwrap();

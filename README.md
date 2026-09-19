@@ -1,10 +1,10 @@
-# DLSS 5 STUDIO ⚡ v1.0.5
+# DLSS 5 STUDIO ⚡ v1.0.6
 
 > **A blisteringly fast, low-memory utility built in pure native Rust to enable and unlock DLSS, Neural Reconstruction, and 4x Frame Generation across your PC games while preserving pristine graphical fidelity.**
 >
 > _Supports **GeForce RTX GPUs (20, 30, and 40-Series)** for DLSS upscaling and OptiScaler Pre-SR, **4x Multi-Frame Generation unlocking for RTX 40-Series**, and **experimental RTX 30-Series Frame Generation** in compatible x64/D3D12 games with native DLSS-G._
 
-[![Version](https://img.shields.io/badge/version-1.0.5-orange.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.6-orange.svg)](#)
 [![Platform](<https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20(64--bit)-blue.svg>)](#)
 [![Language](https://img.shields.io/badge/language-100%25%20Pure%20Rust-red.svg)](#)
 [![i18n](https://img.shields.io/badge/i18n-14%20Languages-yellow.svg)](#)
@@ -52,7 +52,8 @@ Built with [Dioxus](https://dioxuslabs.com/) and direct Win32 APIs, it eliminate
   - **`Native DLSS (RenoDX)`**: For DirectX 12 games with native DLSS pipelines. Hooks into D3D12 NGX vtables and enables 4x MFG unlock.
   - **`DLSS 5 Feeder`**: Dedicated frame interception route for non-DLSS titles or games running on DirectX 11, Vulkan, OpenGL, or legacy pre-DirectX 10 APIs (DirectX 8 and DirectX 9 via automated dgVoodoo 2 translation with 32-bit LAA memory support) (`dlss5-feed.addon64`, `DLSS5_Feed.fx`, `vort_Motion.fx`).
 - **OptiScaler Backend**:
-  - **`OptiScaler DLSS-NR`**: Full neural reconstruction with Pre-SR multipass. Automatically restricted on titles lacking native depth and motion vectors.
+  - **`OptiScaler DLSS-NR`**: Full neural reconstruction with Pre-SR multipass. Compatibility advisories explain when a different rendering route is recommended.
+- **Route Advisories & Deployed Settings**: Studio 1.0.6 keeps rendering routes selectable, highlights incompatible choices, and provides an explicit **Force Override** for renderer advisories. The game sheet reflects the deployed configuration, including the SM86 multiplier ceiling. Frame Generation eligibility and file-safety checks remain mandatory.
 - **Seamless Cross-Route Hot-Swapping**: Switch freely between ReShade (Native/Feeder) and OptiScaler with a single click. DLSS 5 STUDIO automatically unregisters Vulkan implicit layers, removes conflicting proxy DLLs, and deploys the new payload while carrying forward the original vanilla game backups.
 
 ### 4. 🚀 Universal Multi-Store Game Scanner
@@ -167,7 +168,7 @@ The 2x/3x/4x UI ceilings map to `MaxGeneratedFrames=1/2/3`. Studio configures op
 
 ### Installation, conflicts, and restore
 
-- SM86 0.3.3 is pinned to upstream commit `5e79459c2d521f8c3276ce9ee02342c0e2686982`. Each DLL and the upstream notices are SHA-256 verified in a separate versioned cache.
+- SM86 0.3.4 is pinned to upstream commit `196fcb61ef414992a6bef2d237ff609aab09f0d9`. Each DLL and the upstream notices are SHA-256 verified in a separate versioned cache. Existing Studio-managed 0.3.3 installations can be upgraded in place or restored; new installs always use 0.3.4.
 - Installation requires the complete, distinct upstream proxy set: `version.dll`, `winmm.dll`, `dbghelp.dll`, and `dinput8.dll`. Foreign files block installation. A previous Studio-managed backend may be replaced only when its bytes match the expected payload.
 - Only one managed FG backend is installed at a time. SM86 does not use `dxgi.dll` or `d3d12.dll` as its proxy.
 - Backend changes, reinstallations, and **Restore originals** retain original backups and track introduced files. If a completed installation's SM86 proxy has changed externally, resolve the conflict before switching or restoring.
