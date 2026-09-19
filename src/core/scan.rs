@@ -411,6 +411,19 @@ pub fn detect_renpy_api(dir: &Path) -> Option<String> {
     Some("OpenGL".to_string())
 }
 
+/// LOVE (love2d.org) games — e.g. Kingdom Rush — statically link love.dll and
+/// delegate window/context creation to SDL2, which is skipped as generic
+/// middleware by `is_middleware_dll` and never actually calls a D3D/GL create
+/// function itself (love.graphics always renders via Desktop OpenGL, chosen by
+/// SDL2 at runtime), so neither import nor marker scanning ever finds evidence.
+pub fn detect_love_api(dir: &Path) -> Option<String> {
+    if dir.join("love.dll").is_file() {
+        Some("OpenGL".to_string())
+    } else {
+        None
+    }
+}
+
 fn is_middleware_dll(fname: &str) -> bool {
     let n_lower = fname.to_lowercase();
     // DXC also targets SPIR-V for Vulkan; compiler/validator binaries are not renderer evidence.
@@ -431,6 +444,9 @@ fn is_middleware_dll(fname: &str) -> bool {
 
 pub fn detect_sibling_api(dir: &Path) -> Option<String> {
     if let Some(api) = detect_renpy_api(dir) {
+        return Some(api);
+    }
+    if let Some(api) = detect_love_api(dir) {
         return Some(api);
     }
     if dir.join("D3D12Core.dll").exists()
@@ -534,6 +550,9 @@ pub fn detect_api(path: &Path, imports: &[String]) -> Option<String> {
         if let Some(api) = detect_renpy_api(parent) {
             return Some(api);
         }
+        if let Some(api) = detect_love_api(parent) {
+            return Some(api);
+        }
     }
     if imports.iter().any(|i| i.to_lowercase().contains("librenpython")) {
         if let Some(parent) = path.parent() {
@@ -541,6 +560,9 @@ pub fn detect_api(path: &Path, imports: &[String]) -> Option<String> {
                 return Some(api);
             }
         }
+        return Some("OpenGL".to_string());
+    }
+    if imports.iter().any(|i| i.to_lowercase() == "love.dll") {
         return Some("OpenGL".to_string());
     }
 
@@ -889,6 +911,36 @@ pub fn infer_game_name(dir: &Path, exe_path: &Path, xbox_name: Option<String>) -
     }
 }
 
+/// UE4/5 titles ship the Nvidia Streamline plugin's Frame Generation DLLs
+/// (nvngx_dlssg.dll / sl.dlss_g.dll) under Engine/Plugins/Runtime/<Vendor>/.../Win64,
+/// which sits well beyond the main walk's max_depth(5). Probe that known plugin
+/// root separately so games with no copy next to the main exe (e.g. Hogwarts
+/// Legacy) still get recognized as Frame Generation-capable.
+fn scan_deep_vendor_fg(dir: &Path) -> Vec<(PathBuf, Option<String>)> {
+    let mut found = Vec::new();
+    let runtime = dir.join("Engine").join("Plugins").join("Runtime");
+    if !runtime.is_dir() {
+        return found;
+    }
+    for entry in WalkDir::new(&runtime)
+        .max_depth(6)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_lowercase();
+        if file_name == "nvngx_dlssg.dll" || file_name == "sl.dlss_g.dll"
+            || file_name.contains("framegeneration_dx12") || file_name == "fgvk.dll"
+        {
+            let pe_opt = inspect_pe(entry.path());
+            found.push((entry.path().to_path_buf(), pe_opt.and_then(|p| p.version)));
+        }
+    }
+    found
+}
+
 pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
     let dir = dir.as_ref();
     if !dir.exists() || !dir.is_dir() {
@@ -1040,6 +1092,14 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
             } else if (file_name.contains("library_600x900") || file_name == "cover.jpg" || file_name == "poster.jpg") && poster.is_none() {
                 poster = crate::core::steamart::file_to_art_uri(&path);
             }
+        }
+    }
+
+    if !has_fg {
+        let deep_fg = scan_deep_vendor_fg(dir);
+        if !deep_fg.is_empty() {
+            has_fg = true;
+            dlss_files.extend(deep_fg);
         }
     }
 

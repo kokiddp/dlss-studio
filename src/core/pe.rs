@@ -15,6 +15,44 @@ pub struct PeInfo {
     pub imports: Vec<String>,
 }
 
+/// Manually walks the delay-load import directory (data directory index
+/// `IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT`), which pelite 0.10 has no dedicated
+/// API for. Titles that support switching render backends at runtime commonly
+/// delay-load the higher API (e.g. a UE4/5 game statically imports d3d11.dll
+/// but only delay-loads d3d12.dll for its -dx12 RHI path) so it doesn't hard-fail
+/// to launch on systems missing that DLL. Without this, such a DLL is invisible
+/// to `api_from_names` and the game gets misreported as the lower/default API.
+///
+/// The IMAGE_DELAYLOAD_DESCRIPTOR layout is 8 consecutive u32 fields
+/// (Attributes, DllNameRVA, ModuleHandleRVA, ImportAddressTableRVA,
+/// ImportNameTableRVA, BoundImportAddressTableRVA, UnloadInformationTableRVA,
+/// TimeDateStamp); only the DllNameRVA at offset +4 is needed here.
+macro_rules! delay_import_names {
+    ($pe:expr) => {{
+        let pe = $pe;
+        let mut names: Vec<String> = Vec::new();
+        if let Some(dir) = pe.data_directory().get(pelite::image::IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT) {
+            if dir.VirtualAddress != 0 {
+                let mut desc_rva = dir.VirtualAddress;
+                for _ in 0..256 {
+                    let name_rva = match pe.derva_copy::<u32>(desc_rva + 4) {
+                        Ok(v) => v,
+                        Err(_) => break,
+                    };
+                    if name_rva == 0 {
+                        break;
+                    }
+                    if let Ok(name) = pe.derva_c_str(name_rva) {
+                        names.push(name.to_str().unwrap_or("").to_lowercase());
+                    }
+                    desc_rva += 32;
+                }
+            }
+        }
+        names
+    }};
+}
+
 pub fn inspect_pe<P: AsRef<Path>>(path: P) -> Option<PeInfo> {
     let map = FileMap::open(path.as_ref()).ok()?;
     let file = PeFile::from_bytes(map.as_ref()).ok()?;
@@ -29,6 +67,7 @@ pub fn inspect_pe<P: AsRef<Path>>(path: P) -> Option<PeInfo> {
                     }
                 }
             }
+            list.extend(delay_import_names!(pe32));
             let is_laa = (pe32.file_header().Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
             (32, is_laa, list)
         }
@@ -41,6 +80,7 @@ pub fn inspect_pe<P: AsRef<Path>>(path: P) -> Option<PeInfo> {
                     }
                 }
             }
+            list.extend(delay_import_names!(pe64));
             (64, true, list)
         }
     };
