@@ -69,7 +69,7 @@ Scans and organizes your games automatically without manual configuration:
 
 - **Atomic Rollback Journals**: Every modification automatically creates a snapshot in `_DLSS5_Backup/originals/` before touching any game files.
 - **Vanilla Backup Continuity**: Switching between routes carries forward the genuine unmodded game files through arbitrary successive swaps.
-- **SM86 Ownership Checks**: Journals the backend, proxies, configuration, and notices. Failed SM86 installs attempt rollback; restore and backend switches refuse to delete proxies replaced by another mod after a completed installation.
+- **SM86 Ownership Checks**: Journals the backend, proxies, configuration, and notices. Failed SM86 reinstalls recover the previous managed installation from a temporary checkpoint; restore and backend switches refuse to delete proxies replaced by another mod after a completed installation.
 - **Restore Originals**: Restores authentic vanilla binaries with a single click and archives the backup manifest.
 - **Clean Untracked Mods**: Purges leftover proxy DLLs (`dxgi.dll`, `OptiScaler.dll`, `ReShade64.dll`, `.addon64`) up to 4 directory levels deep without risking original game files.
 - **Process Guarding**: Inspects running processes via native Win32 `Toolhelp32` snapshots, blocking mod deployment or restoration if the game is running.
@@ -105,6 +105,7 @@ Scans and organizes your games automatically without manual configuration:
   - _For experimental DLSSG SM86 Frame Generation_: NVIDIA GeForce RTX 30-Series (Ampere), a 64-bit D3D12 executable, and the game's original DLSS-G integration. See [RTX 30 setup](docs/RTX30-SM86.md).
 - **Storage**: ~15 MB free space.
   - The optional SM86 proxy set requires about 115 MiB in the component cache and another 115 MiB per installed game, plus the upstream runtime's extracted bundle cache.
+  - Reinstalling or switching an SM86 installation temporarily requires space for an additional copy of its managed files for rollback.
 
 ---
 

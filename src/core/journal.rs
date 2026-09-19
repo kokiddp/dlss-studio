@@ -180,22 +180,11 @@ pub fn save_manifest(game_dir: &Path, manifest: &ActiveManifest) -> std::io::Res
     file.sync_all()?;
     drop(file);
     let destination = bdir.join("manifest.json");
+    // Rust's rename replaces an existing file on Windows too. Never delete
+    // the live journal as a fallback: an unsuccessful commit must retain it.
     if let Err(err) = fs::rename(&temporary, &destination) {
-        #[cfg(windows)]
-        {
-            if err.kind() == std::io::ErrorKind::AlreadyExists && destination.exists() {
-                fs::remove_file(&destination)?;
-                fs::rename(&temporary, &destination)?;
-            } else {
-                let _ = fs::remove_file(&temporary);
-                return Err(err);
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = fs::remove_file(&temporary);
-            return Err(err);
-        }
+        let _ = fs::remove_file(&temporary);
+        return Err(err);
     }
     Ok(())
 }
@@ -426,6 +415,17 @@ pub fn clean_untracked_mods_with_exe(game_dir: &Path, exe_path: Option<&Path>) -
 }
 
 pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
+    if crate::core::install_checkpoint::is_pending(game_dir) {
+        crate::core::install_checkpoint::recover(game_dir)?;
+    }
+    restore_game_impl(game_dir, false)
+}
+
+pub(crate) fn restore_failed_install(game_dir: &Path) -> std::io::Result<bool> {
+    restore_game_impl(game_dir, true)
+}
+
+fn restore_game_impl(game_dir: &Path, rollback: bool) -> std::io::Result<bool> {
     crate::core::logger::info("restore", &format!("Initiating restore for game: {}", game_dir.display()));
     let manifest = match read_manifest(game_dir) {
         Some(m) => m,
@@ -449,7 +449,7 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
     let bdir = backup_dir(game_dir);
 
     if manifest.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86)
-        && !manifest.deployment_in_progress
+        && !manifest.deployment_in_progress && !rollback
     {
         for rel in &manifest.frame_gen_proxies {
             let path = game_dir.join(rel);
@@ -516,7 +516,7 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
         .map(|e| game_dir.join(e));
     // The SM86 path owns an exact journaled set. A blanket cleanup here can
     // erase an unrelated mod or the original configuration just restored.
-    if manifest.frame_gen_backend != Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
+    if !rollback && manifest.frame_gen_backend != Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
         clean_untracked_mods_with_exe(game_dir, exe_opt.as_deref())?;
     }
     let _ = crate::core::vulkan_layer::unregister_vulkan_layer(game_dir);
@@ -803,5 +803,22 @@ mod tests {
         assert_eq!(read_manifest(&temp).unwrap().route, "native");
 
         let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_manifest_commit_preserves_existing_journal() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let game = std::env::temp_dir().join(format!("journal-locked-{stamp}"));
+        save_manifest(&game, &ActiveManifest::default()).unwrap();
+        let path = backup_dir(&game).join("manifest.json");
+        let before = fs::read(&path).unwrap();
+        let lock = fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        assert!(save_manifest(&game, &ActiveManifest { route: "native".into(), ..Default::default() }).is_err());
+        drop(lock);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(backup_dir(&game)).unwrap().count(), 1, "temporary files must be removed after a failed commit");
+        fs::remove_dir_all(game).unwrap();
     }
 }

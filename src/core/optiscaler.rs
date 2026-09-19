@@ -1081,6 +1081,9 @@ fn deploy_with_framegen(
         FrameGenBackend::RtxMfg
     } else { FrameGenBackend::RenoDxAda });
     let sm86 = backend == FrameGenBackend::DlssgSm86;
+    if crate::core::install_checkpoint::is_pending(&opts.game_dir) {
+        return Err("An interrupted installation needs recovery. Use Restore originals before installing again.".into());
+    }
     if (backend == FrameGenBackend::RtxMfg && route != crate::core::install_routes::InstallRoute::OptiScaler)
         || (backend == FrameGenBackend::RenoDxAda && route == crate::core::install_routes::InstallRoute::OptiScaler)
     { return Err("Frame Generation backend does not match the rendering route".into()); }
@@ -1131,46 +1134,59 @@ fn deploy_with_framegen(
     let previous_ini = if sm86 && mod_root.join(sm86_fg::INI_NAME).exists() {
         Some(fs::read_to_string(mod_root.join(sm86_fg::INI_NAME)).map_err(|e| e.to_string())?)
     } else { None };
-    if let Some(addon) = previous_ada_addon {
-        fs::remove_file(addon).map_err(|e| format!("Cannot remove previous managed Ada MFG add-on: {e}"))?;
+    let transactional = sm86 || crate::core::journal::read_manifest(&opts.game_dir)
+        .map(|m| m.frame_gen_backend == Some(FrameGenBackend::DlssgSm86)).unwrap_or(false);
+    if transactional {
+        crate::core::install_checkpoint::begin(&opts.game_dir).map_err(|e| e.to_string())?;
     }
-    // Preserve the INI on same-backend reinstalls. Backend switches remove only
-    // manifest-owned, hash-recognized proxies and restore any original config.
-    if !sm86 { remove_managed_sm86(&opts.game_dir)?; }
-    let mut render_opts = opts.clone();
-    render_opts.mfg_unlock = matches!(backend, FrameGenBackend::RenoDxAda | FrameGenBackend::RtxMfg);
-    let mut result = match deploy(&render_opts, payloads) {
-        Ok(result) => result,
-        Err(error) if sm86 => return Err(rollback_sm86(&opts.game_dir, error)),
-        Err(error) => return Err(error),
-    };
-    let mut manifest = crate::core::journal::read_manifest(&opts.game_dir).ok_or("Installer did not save its manifest")?;
-    manifest.frame_gen_backend = Some(backend);
-    if sm86 {
-        let payload = payloads.sm86.as_ref().ok_or("SM86 payload disappeared")?;
-        if let Err(error) = deploy_sm86_files(opts, payload, &mod_root, previous_ini.as_deref(), &mut manifest, &mut result.log_lines) {
-            return Err(rollback_sm86(&opts.game_dir, error));
+    let outcome = (|| -> Result<DeployResult, String> {
+        if let Some(addon) = previous_ada_addon {
+            fs::remove_file(addon).map_err(|e| format!("Cannot remove previous managed Ada MFG add-on: {e}"))?;
         }
-        result.log_lines.push(format!("[SM86] Enabled {}x ceiling; select DLSS Frame Generation in the game. Actual multiplier is game-dependent.", opts.mfg_multiplier));
-    }
-    manifest.deployment_in_progress = false;
-    if let Err(error) = save_manifest(&opts.game_dir, &manifest) {
-        return Err(if sm86 { rollback_sm86(&opts.game_dir, error.to_string()) } else { error.to_string() });
-    }
-    result.replaced = manifest.replaced.len();
-    result.added = manifest.added.len();
-    if sm86 {
-        let _ = append_history(&HistoryRow {
-            date: crate::core::journal::now_timestamp_str(),
-            dir: opts.game_dir.to_string_lossy().to_string(),
-            game_name: opts.game_name.clone(), action: "install_sm86".into(),
-            replaced: result.replaced, added: result.added,
-        });
-    }
-    Ok(result)
+        // Preserve the INI on same-backend reinstalls. Backend switches remove only
+        // manifest-owned, hash-recognized proxies and restore any original config.
+        if !sm86 { remove_managed_sm86(&opts.game_dir)?; }
+        let mut render_opts = opts.clone();
+        render_opts.mfg_unlock = matches!(backend, FrameGenBackend::RenoDxAda | FrameGenBackend::RtxMfg);
+        let mut result = deploy(&render_opts, payloads)?;
+        let mut manifest = crate::core::journal::read_manifest(&opts.game_dir).ok_or("Installer did not save its manifest")?;
+        manifest.frame_gen_backend = Some(backend);
+        if sm86 {
+            let payload = payloads.sm86.as_ref().ok_or("SM86 payload disappeared")?;
+            if let Err(error) = deploy_sm86_files(opts, payload, &mod_root, previous_ini.as_deref(), &mut manifest, &mut result.log_lines) {
+                return Err(error);
+            }
+            result.log_lines.push(format!("[SM86] Enabled {}x ceiling; select DLSS Frame Generation in the game. Actual multiplier is game-dependent.", opts.mfg_multiplier));
+        }
+        manifest.deployment_in_progress = false;
+        if let Err(error) = save_manifest(&opts.game_dir, &manifest) {
+            return Err(error.to_string());
+        }
+        if transactional {
+            crate::core::install_checkpoint::finish(&opts.game_dir).map_err(|e| e.to_string())?;
+        }
+        result.replaced = manifest.replaced.len();
+        result.added = manifest.added.len();
+        if sm86 {
+            let _ = append_history(&HistoryRow {
+                date: crate::core::journal::now_timestamp_str(),
+                dir: opts.game_dir.to_string_lossy().to_string(),
+                game_name: opts.game_name.clone(), action: "install_sm86".into(),
+                replaced: result.replaced, added: result.added,
+            });
+        }
+        Ok(result)
+    })();
+    outcome.map_err(|error| if transactional { rollback_sm86(&opts.game_dir, error) } else { error })
 }
 
 fn rollback_sm86(game_dir: &Path, error: String) -> String {
+    if crate::core::install_checkpoint::is_pending(game_dir) {
+        return match crate::core::install_checkpoint::recover(game_dir) {
+            Ok(()) => format!("{error}. Installation rolled back; previous installation restored."),
+            Err(rollback) => format!("{error}. Rollback failed: {rollback}. Keep _DLSS5_Backup and use Restore originals before retrying."),
+        };
+    }
     if crate::core::journal::read_manifest(game_dir).is_none() {
         return format!("{error}. No tracked installation to roll back.");
     }
@@ -2560,6 +2576,61 @@ mod tests {
                 assert_eq!(get_ini(&fs::read_to_string(bin.join("OptiScaler.ini")).unwrap(), "FrameGen", "External"), Some("true".into()));
             }
         }
+        // A failure after the renderer and SM86 proxies/INI have changed must
+        // recover the entire previous installation, not uninstall it.
+        let before_manifest = fs::read(crate::core::journal::backup_dir(&game).join("manifest.json")).unwrap();
+        let before_files: Vec<_> = walkdir::WalkDir::new(&game).into_iter()
+            .filter_entry(|entry| entry.file_name() != "_DLSS5_Backup")
+            .map(|entry| entry.unwrap()).filter(|entry| entry.file_type().is_file())
+            .map(|entry| (entry.path().strip_prefix(&game).unwrap().to_path_buf(), fs::read(entry.path()).unwrap()))
+            .collect();
+        let local_payload = root.join("failure-payload");
+        fs::create_dir_all(&local_payload).unwrap();
+        let verified = payloads.sm86.as_ref().unwrap().directory.clone();
+        for name in sm86_fg::PROXIES.iter().map(|p| p.0).chain(std::iter::once(sm86_fg::NOTICE_NAME)) {
+            fs::copy(verified.join(name), local_payload.join(name)).unwrap();
+        }
+        payloads.sm86 = Some(sm86_fg::Sm86Payload { directory: local_payload.clone() });
+        fn fail_late(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
+            let result = deploy_native_dlss5_inner(opts, payloads)?;
+            // Preflight already verified the payload. Emulate a source becoming
+            // unavailable just before the last tracked SM86 copy.
+            fs::remove_file(payloads.sm86.as_ref().unwrap().directory.join(crate::core::sm86_fg::NOTICE_NAME)).unwrap();
+            Ok(result)
+        }
+        fn fail_late_same_route(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
+            let result = deploy_feeder_inner(opts, payloads)?;
+            fs::remove_file(payloads.sm86.as_ref().unwrap().directory.join(crate::core::sm86_fg::NOTICE_NAME)).unwrap();
+            Ok(result)
+        }
+        opts.mfg_multiplier = 2;
+        let failures: [(crate::core::install_routes::InstallRoute, fn(&DeployOptions, &PayloadBundle) -> Result<DeployResult, String>); 2] = [
+            (crate::core::install_routes::InstallRoute::Native, fail_late),
+            (crate::core::install_routes::InstallRoute::Feeder, fail_late_same_route),
+        ];
+        for (route, failing_renderer) in failures {
+        fs::copy(verified.join(sm86_fg::NOTICE_NAME), local_payload.join(sm86_fg::NOTICE_NAME)).unwrap();
+        let failure = deploy_with_framegen(&opts, &payloads, route, failing_renderer).unwrap_err();
+        assert!(failure.contains("previous installation restored"), "{failure}");
+        assert_eq!(fs::read(crate::core::journal::backup_dir(&game).join("manifest.json")).unwrap(), before_manifest);
+        for (rel, bytes) in &before_files { assert_eq!(fs::read(game.join(rel)).unwrap(), *bytes, "Failed reinstall changed {}", rel.display()); }
+        let after_count = walkdir::WalkDir::new(&game).into_iter()
+            .filter_entry(|entry| entry.file_name() != "_DLSS5_Backup")
+            .map(|entry| entry.unwrap()).filter(|entry| entry.file_type().is_file()).count();
+        assert_eq!(after_count, before_files.len(), "Failed reinstall left new files behind");
+        assert!(!crate::core::install_checkpoint::is_pending(&game));
+        }
+        payloads.sm86 = Some(sm86_fg::Sm86Payload { directory: verified });
+        opts.mfg_multiplier = 4;
+
+        // Copilot's slot-specific recognizer must also drive scan-time status.
+        assert!(crate::core::scan::scan_game_directory(&game).unwrap().mfg_unlock_installed);
+        fs::copy(bin.join("version.dll"), bin.join("winmm.dll")).unwrap();
+        assert!(!sm86_fg::is_proxy(&bin.join("winmm.dll")));
+        assert!(!crate::core::scan::scan_game_directory(&game).unwrap().mfg_unlock_installed);
+        assert!(deploy_native_dlss5_with_bundle(&opts, &payloads).is_err());
+        fs::copy(payloads.sm86.as_ref().unwrap().directory.join("winmm.dll"), bin.join("winmm.dll")).unwrap();
+
         // Switch to Ada, then RTXMFG, then SM86: no two FG backends may coexist.
         opts.frame_gen_backend = Some(FrameGenBackend::RenoDxAda);
         assert!(deploy_native_dlss5_with_bundle(&opts, &payloads).is_err(), "Ada backend must reject an Ampere GPU");

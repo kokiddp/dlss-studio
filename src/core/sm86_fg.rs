@@ -261,6 +261,14 @@ mod tests {
         assert!(check_proxy_slots(&game, &game, Some(&expected)).is_err());
         fs::copy(&expected, game.join("version.dll")).unwrap();
         assert!(check_proxy_slots(&game, &game, Some(&expected)).is_ok());
+        journal::save_manifest(&game, &journal::ActiveManifest {
+            route: "optiscaler".into(),
+            replaced: vec![journal::ManifestItem { rel: "version.dll".into(), ..Default::default() }],
+            ..Default::default()
+        }).unwrap();
+        assert!(check_proxy_slots(&game, &game, Some(&expected)).is_ok());
+        fs::write(game.join("version.dll"), b"externally replaced owned slot").unwrap();
+        assert!(check_proxy_slots(&game, &game, Some(&expected)).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -180,6 +180,19 @@ fn main() {
                 mfg_multiplier: 4,
                 nr_style: 0,
             };
+            // The headless route must acquire the same verified SM86 payload
+            // as the UI; selecting the backend alone only works with a warm cache.
+            if capability.backend == core::framegen::FrameGenBackend::DlssgSm86 {
+                let mut lines = Vec::new();
+                let download = tokio::runtime::Runtime::new()
+                    .map_err(|e| e.to_string())
+                    .and_then(|runtime| runtime.block_on(core::sm86_fg::ensure_payload(&mut lines)));
+                if let Err(error) = download {
+                    eprintln!("Deploy error: {error}");
+                    return;
+                }
+                for line in lines { println!("{line}"); }
+            }
             match core::optiscaler::deploy_optiscaler(&opts) {
                 Ok(res) => {
                     for line in res.log_lines {
