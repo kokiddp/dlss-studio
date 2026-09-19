@@ -38,6 +38,8 @@ fn main() {
         let exe_path = std::path::PathBuf::from(&args[3]);
         let passes = args.get(4).and_then(|p| p.parse::<u32>().ok()).unwrap_or(1);
         let opts = core::optiscaler::DeployOptions {
+            frame_gen_backend: None,
+            frame_gen_gpu: None,
             game_name: Some("Target Game".to_string()),
             game_dir,
             exe_path,
@@ -141,7 +143,33 @@ fn main() {
     if args.len() > 2 && args[1] == "--deploy-optiscaler" {
         let game_dir = std::path::PathBuf::from(&args[2]);
         if let Some(game) = core::scan::scan_game_directory(&game_dir) {
+            let detected_gpus = core::gpu::detect_gpus();
+            let Some(frame_gen_gpu) = detected_gpus
+                .iter()
+                .find(|gpu| gpu.vendor_id == 0x10de)
+                .cloned()
+                .or_else(|| detected_gpus.first().cloned())
+            else {
+                eprintln!("Deploy error: Frame Generation requires detected GPU information");
+                return;
+            };
+            let capability = core::framegen::framegen_capability(
+                &game,
+                &frame_gen_gpu,
+                core::install_routes::InstallRoute::OptiScaler,
+            );
+            if capability.backend == core::framegen::FrameGenBackend::None {
+                eprintln!(
+                    "Deploy error: {}",
+                    capability
+                        .reason
+                        .unwrap_or("Requested Frame Generation backend is not supported for this game/GPU")
+                );
+                return;
+            }
             let opts = core::optiscaler::DeployOptions {
+                frame_gen_backend: Some(capability.backend),
+                frame_gen_gpu: Some(frame_gen_gpu),
                 game_name: Some(game.name.clone()),
                 game_dir: game.dir.clone(),
                 exe_path: game.exe_path.clone(),
@@ -152,6 +180,19 @@ fn main() {
                 mfg_multiplier: 4,
                 nr_style: 0,
             };
+            // The headless route must acquire the same verified SM86 payload
+            // as the UI; selecting the backend alone only works with a warm cache.
+            if capability.backend == core::framegen::FrameGenBackend::DlssgSm86 {
+                let mut lines = Vec::new();
+                let download = tokio::runtime::Runtime::new()
+                    .map_err(|e| e.to_string())
+                    .and_then(|runtime| runtime.block_on(core::sm86_fg::ensure_payload(&mut lines)));
+                if let Err(error) = download {
+                    eprintln!("Deploy error: {error}");
+                    return;
+                }
+                for line in lines { println!("{line}"); }
+            }
             match core::optiscaler::deploy_optiscaler(&opts) {
                 Ok(res) => {
                     for line in res.log_lines {

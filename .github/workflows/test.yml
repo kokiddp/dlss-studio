@@ -1,0 +1,21 @@
+name: Windows PR checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check all Windows targets
+        run: cargo check --locked --all-targets
+      - name: Run tests without game payload downloads
+        run: cargo test --locked --bin dlss-studio
+      - name: Verify pinned SM86 payload and complete deployment lifecycle
+        run: cargo test --locked --bin dlss-studio sm86_verified_payload_lifecycle -- --ignored --nocapture

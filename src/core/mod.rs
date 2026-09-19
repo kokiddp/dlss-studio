@@ -1,7 +1,10 @@
 pub mod pe;
 pub mod gpu;
+pub mod framegen;
+pub mod sm86_fg;
 pub mod scan;
 pub mod journal;
+pub(crate) mod install_checkpoint;
 pub mod optiscaler;
 pub mod mfg_unlock;
 pub mod state;

@@ -276,6 +276,10 @@ pub fn is_reshade_dll<P: AsRef<Path>>(path: P) -> (bool, Option<String>, bool) {
     (mentions, pe.version, has_addon_support)
 }
 
+pub fn is_dlssg_sm86_proxy(path: &Path) -> bool {
+    crate::core::sm86_fg::is_proxy(path)
+}
+
 pub fn is_optiscaler_or_proxy<P: AsRef<Path>>(path: P) -> bool {
     let p = path.as_ref();
     if !p.is_file() {
@@ -409,4 +413,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-

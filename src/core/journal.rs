@@ -30,6 +30,14 @@ pub struct ManifestGame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveManifest {
+    /// True until the complete SM86 install is committed. Partial writes can
+    /// then be rolled back; completed installs protect externally changed DLLs.
+    #[serde(default)]
+    pub deployment_in_progress: bool,
+    #[serde(default)]
+    pub frame_gen_backend: Option<crate::core::framegen::FrameGenBackend>,
+    #[serde(default)]
+    pub frame_gen_proxies: Vec<String>,
     #[serde(default = "default_manifest_version")]
     pub version: u32,
     #[serde(default)]
@@ -55,6 +63,9 @@ fn default_manifest_version() -> u32 { 1 }
 impl Default for ActiveManifest {
     fn default() -> Self {
         Self {
+            deployment_in_progress: false,
+            frame_gen_backend: None,
+            frame_gen_proxies: Vec::new(),
             version: 1,
             date: format!("{:?}", std::time::SystemTime::now()),
             route: "optiscaler".to_string(),
@@ -116,14 +127,21 @@ pub fn has_backup_available(game_dir: &Path) -> bool {
 }
 
 pub fn read_manifest(game_dir: &Path) -> Option<ActiveManifest> {
-    let bdir = backup_dir(game_dir);
-    let manifest_file = bdir.join("manifest.json");
-    if let Ok(bytes) = fs::read(&manifest_file) {
-        if let Ok(m) = serde_json::from_slice::<ActiveManifest>(&bytes) {
-            return Some(m);
-        }
+    read_manifest_checked(game_dir).ok().flatten()
+}
+
+/// Mutation paths must distinguish an absent journal from an unreadable or
+/// malformed one. Only a genuinely absent journal permits untracked cleanup.
+pub(crate) fn read_manifest_checked(game_dir: &Path) -> std::io::Result<Option<ActiveManifest>> {
+    let path = backup_dir(game_dir).join("manifest.json");
+    match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData,
+                format!("Invalid installation journal {}: {error}. Preserve _DLSS5_Backup and repair the journal before continuing.", path.display()))
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
-    None
 }
 
 pub fn read_latest_done_manifest(game_dir: &Path) -> Option<ActiveManifest> {
@@ -161,7 +179,20 @@ pub fn save_manifest(game_dir: &Path, manifest: &ActiveManifest) -> std::io::Res
     let bdir = backup_dir(game_dir);
     fs::create_dir_all(&bdir)?;
     let bytes = serde_json::to_vec_pretty(manifest)?;
-    fs::write(bdir.join("manifest.json"), bytes)?;
+    use std::io::Write;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let temporary = bdir.join(format!("manifest-{}-{stamp}.tmp", std::process::id()));
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+    let destination = bdir.join("manifest.json");
+    // Rust's rename replaces an existing file on Windows too. Never delete
+    // the live journal as a fallback: an unsuccessful commit must retain it.
+    if let Err(err) = fs::rename(&temporary, &destination) {
+        let _ = fs::remove_file(&temporary);
+        return Err(err);
+    }
     Ok(())
 }
 
@@ -212,6 +243,8 @@ pub fn resolve_target_path(game_dir: &Path, rel: &str) -> PathBuf {
 
 pub fn is_proxy_hook(path: &Path) -> bool {
     let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+    if crate::core::sm86_fg::PROXIES.iter().any(|p| p.0 == fname)
+        && crate::core::pe::is_dlssg_sm86_proxy(path) { return true; }
     let hook_names = ["dxgi.dll", "winmm.dll", "d3d12.dll", "d3d11.dll", "d3d9.dll", "d3d8.dll", "opengl32.dll", "dinput8.dll", "version.dll"];
     if hook_names.contains(&fname.as_str()) {
         return crate::core::pe::is_optiscaler_or_proxy(path) || crate::core::pe::is_reshade_dll(path).0;
@@ -299,13 +332,16 @@ pub fn clean_untracked_mods_with_exe(game_dir: &Path, exe_path: Option<&Path>) -
     }
 
     for dir in unique_dirs {
+        let has_sm86 = crate::core::sm86_fg::PROXIES.iter()
+            .any(|p| crate::core::pe::is_dlssg_sm86_proxy(&dir.join(p.0)));
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 let fname = entry.file_name().to_string_lossy().to_string();
                 let lower = fname.to_lowercase();
 
-                if lower == "optiscaler.ini"
+                if (has_sm86 && (lower == crate::core::sm86_fg::INI_NAME || lower == crate::core::sm86_fg::NOTICE_NAME.to_ascii_lowercase()))
+                    || lower == "optiscaler.ini"
                     || lower == "optiscaler.log"
                     || lower == "optiscaler.dll"
                     || lower == "reshade.ini"
@@ -352,7 +388,7 @@ pub fn clean_untracked_mods_with_exe(game_dir: &Path, exe_path: Option<&Path>) -
                         return Err(std::io::Error::new(e.kind(), format!("Failed to remove reshade-shaders directory: {}. Is the game running?", e)));
                     }
                     removed.push("reshade-shaders/".to_string());
-                } else if lower == "dxgi.dll" || lower == "winmm.dll" || lower == "d3d12.dll" || lower == "d3d11.dll" || lower == "d3d9.dll" || lower == "d3d8.dll" || lower == "dinput8.dll" || lower == "version.dll" {
+                } else if lower == "dxgi.dll" || lower == "winmm.dll" || lower == "dbghelp.dll" || lower == "d3d12.dll" || lower == "d3d11.dll" || lower == "d3d9.dll" || lower == "d3d8.dll" || lower == "dinput8.dll" || lower == "version.dll" {
                     if is_proxy_hook(&path) {
                         match fs::remove_file(&path) {
                             Ok(_) => {
@@ -386,8 +422,19 @@ pub fn clean_untracked_mods_with_exe(game_dir: &Path, exe_path: Option<&Path>) -
 }
 
 pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
+    if crate::core::install_checkpoint::is_pending(game_dir) {
+        crate::core::install_checkpoint::recover(game_dir)?;
+    }
+    restore_game_impl(game_dir, false)
+}
+
+pub(crate) fn restore_failed_install(game_dir: &Path) -> std::io::Result<bool> {
+    restore_game_impl(game_dir, true)
+}
+
+fn restore_game_impl(game_dir: &Path, rollback: bool) -> std::io::Result<bool> {
     crate::core::logger::info("restore", &format!("Initiating restore for game: {}", game_dir.display()));
-    let manifest = match read_manifest(game_dir) {
+    let manifest = match read_manifest_checked(game_dir)? {
         Some(m) => m,
         None => {
             // Fallback: clean untracked mods if no manifest is found
@@ -407,6 +454,26 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
     }
 
     let bdir = backup_dir(game_dir);
+
+    if manifest.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86)
+        && !manifest.deployment_in_progress && !rollback
+    {
+        for rel in &manifest.frame_gen_proxies {
+            let path = game_dir.join(rel);
+            if path.exists() && !crate::core::pe::is_dlssg_sm86_proxy(&path) {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("SM86 proxy changed externally: {}. Resolve the conflict before restoring.", path.display())));
+            }
+        }
+    }
+
+    // A missing original is an error, not a successful restore. Leave the
+    // active manifest intact so recovery can be retried.
+    for item in &manifest.replaced {
+        let original = bdir.join(manifest.backup_prefix.as_deref().unwrap_or("")).join(&item.rel);
+        if !original.is_file() {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Original backup missing: {}", original.display())));
+        }
+    }
 
     for item in &manifest.replaced {
         let backup_file = if let Some(ref p) = manifest.backup_prefix {
@@ -437,15 +504,27 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
     for rel in &manifest.added {
         let target_file = resolve_target_path(game_dir, rel);
         if target_file.exists() {
-            let _ = fs::remove_file(&target_file);
+            fs::remove_file(&target_file)?;
             crate::core::logger::debug("restore", &format!("Removed mod file: {}", target_file.display()));
         }
     }
 
-    for rel in manifest.added_dirs.iter().rev() {
+    let mut added_dirs = manifest.added_dirs.iter().collect::<Vec<_>>();
+    added_dirs.sort_by_key(|rel| std::cmp::Reverse(Path::new(rel).components().count()));
+    for rel in added_dirs {
         let target_dir = resolve_target_path(game_dir, rel);
         if target_dir.exists() {
-            let _ = fs::remove_dir_all(&target_dir);
+            if rollback || manifest.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
+                // Tracked files were removed individually. A nonempty directory
+                // may contain files added by the user after installation.
+                match fs::remove_dir(&target_dir) {
+                    Ok(()) => {},
+                    Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => continue,
+                    Err(error) => return Err(error),
+                }
+            } else {
+                fs::remove_dir_all(&target_dir)?;
+            }
             crate::core::logger::debug("restore", &format!("Removed mod directory: {}", target_dir.display()));
         }
     }
@@ -454,7 +533,11 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
     let exe_opt = manifest.game_exe.as_ref()
         .or_else(|| manifest.game.as_ref().and_then(|g| g.exe.as_ref()))
         .map(|e| game_dir.join(e));
-    let _ = clean_untracked_mods_with_exe(game_dir, exe_opt.as_deref());
+    // The SM86 path owns an exact journaled set. A blanket cleanup here can
+    // erase an unrelated mod or the original configuration just restored.
+    if !rollback && manifest.frame_gen_backend != Some(crate::core::framegen::FrameGenBackend::DlssgSm86) {
+        clean_untracked_mods_with_exe(game_dir, exe_opt.as_deref())?;
+    }
     let _ = crate::core::vulkan_layer::unregister_vulkan_layer(game_dir);
 
     let manifest_path = bdir.join("manifest.json");
@@ -589,6 +672,39 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_manifest_blocks_restore_without_cleaning_files() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let game = std::env::temp_dir().join(format!("journal-corrupt-{stamp}"));
+        fs::create_dir_all(game.join("_DLSS5_Backup")).unwrap();
+        fs::write(game.join("_DLSS5_Backup/manifest.json"), b"{broken").unwrap();
+        fs::write(game.join("ReShade.ini"), b"keep user settings").unwrap();
+        assert_eq!(restore_game(&game).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(game.join("ReShade.ini")).unwrap(), b"keep user settings");
+        assert_eq!(fs::read(game.join("_DLSS5_Backup/manifest.json")).unwrap(), b"{broken");
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
+    fn sm86_restore_preserves_user_files_inside_managed_directories() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let game = std::env::temp_dir().join(format!("journal-user-files-{stamp}"));
+        fs::create_dir_all(game.join("reshade-shaders")).unwrap();
+        fs::write(game.join("reshade-shaders/installed.fx"), b"managed").unwrap();
+        fs::write(game.join("reshade-shaders/user.fx"), b"user file").unwrap();
+        save_manifest(&game, &ActiveManifest {
+            frame_gen_backend: Some(crate::core::framegen::FrameGenBackend::DlssgSm86),
+            added: vec!["reshade-shaders/installed.fx".into()],
+            added_dirs: vec!["reshade-shaders".into()],
+            ..Default::default()
+        }).unwrap();
+        restore_game(&game).unwrap();
+        assert!(!game.join("reshade-shaders/installed.fx").exists());
+        assert_eq!(fs::read(game.join("reshade-shaders/user.fx")).unwrap(), b"user file");
+        assert!(!has_backup_available(&game));
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[test]
     fn test_clean_untracked_mods() {
         let temp_dir = std::env::temp_dir().join(format!("dlss_clean_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
         fs::create_dir_all(&temp_dir).unwrap();
@@ -712,5 +828,49 @@ mod tests {
 
         let _ = fs::remove_dir_all(&temp);
     }
-}
 
+    #[test]
+    fn test_save_manifest_can_replace_existing_file() {
+        let temp = std::env::temp_dir().join(format!(
+            "test_journal_save_manifest_replace_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+
+        let first = ActiveManifest {
+            route: "optiscaler".to_string(),
+            ..Default::default()
+        };
+        save_manifest(&temp, &first).unwrap();
+        assert_eq!(read_manifest(&temp).unwrap().route, "optiscaler");
+
+        let second = ActiveManifest {
+            route: "native".to_string(),
+            ..Default::default()
+        };
+        save_manifest(&temp, &second).unwrap();
+        assert_eq!(read_manifest(&temp).unwrap().route, "native");
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_manifest_commit_preserves_existing_journal() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let game = std::env::temp_dir().join(format!("journal-locked-{stamp}"));
+        save_manifest(&game, &ActiveManifest::default()).unwrap();
+        let path = backup_dir(&game).join("manifest.json");
+        let before = fs::read(&path).unwrap();
+        let lock = fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        assert!(save_manifest(&game, &ActiveManifest { route: "native".into(), ..Default::default() }).is_err());
+        drop(lock);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(backup_dir(&game)).unwrap().count(), 1, "temporary files must be removed after a failed commit");
+        fs::remove_dir_all(game).unwrap();
+    }
+}
