@@ -165,13 +165,17 @@ impl GameEntry {
     }
 
     pub fn route_display_name(&self) -> &'static str {
+        self.route_display_name_lang("en")
+    }
+
+    pub fn route_display_name_lang(&self, lang: &str) -> &'static str {
         match self.installed_route.as_deref() {
-            Some("feeder") => "Feeder · Neural Rendering",
-            Some("native") => "Native D3D12",
-            Some("optiscaler") => "OptiScaler",
-            _ if self.optiscaler_installed => "OptiScaler",
-            _ if self.reshade_installed => "ReShade",
-            _ => "Vanilla",
+            Some("feeder") => crate::core::i18n::t(lang, "route_display_feeder"),
+            Some("native") => crate::core::i18n::t(lang, "route_display_native"),
+            Some("optiscaler") => crate::core::i18n::t(lang, "route_display_optiscaler"),
+            _ if self.optiscaler_installed => crate::core::i18n::t(lang, "route_display_optiscaler"),
+            _ if self.reshade_installed => crate::core::i18n::t(lang, "route_display_reshade"),
+            _ => crate::core::i18n::t(lang, "route_display_vanilla"),
         }
     }
 }

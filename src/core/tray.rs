@@ -209,10 +209,11 @@ pub fn show_background_notification() {
         nid.uFlags = NIF_INFO;
         nid.dwInfoFlags = NIIF_INFO;
 
+        let lang = crate::core::state::load_state().lang;
         fill_u16_buf(&mut nid.szInfoTitle, "DLSS 5 Studio");
         fill_u16_buf(
             &mut nid.szInfo,
-            "DLSS 5 Studio is now running in the background.",
+            crate::core::i18n::t(&lang, "tray_notif_body"),
         );
 
         let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -270,7 +271,8 @@ pub fn start_system_tray() {
             nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
             nid.uCallbackMessage = WM_TRAY_CALLBACK;
             nid.hIcon = icon;
-            fill_u16_buf(&mut nid.szTip, "DLSS 5 Studio (Running in background)");
+            let lang = crate::core::state::load_state().lang;
+            fill_u16_buf(&mut nid.szTip, crate::core::i18n::t(&lang, "tray_tooltip_running"));
 
             let _ = Shell_NotifyIconW(NIM_ADD, &nid);
 
@@ -326,11 +328,16 @@ unsafe fn show_tray_context_menu(hwnd: HWND) {
         Err(_) => return,
     };
 
+    let lang = crate::core::state::load_state().lang;
+    let open_label = to_wide(crate::core::i18n::t(&lang, "tray_menu_open"));
+    let startup_label = to_wide(crate::core::i18n::t(&lang, "tray_menu_run_startup"));
+    let exit_label = to_wide(crate::core::i18n::t(&lang, "tray_menu_exit"));
+
     let _ = AppendMenuW(
         hmenu,
         MF_STRING,
         CMD_OPEN as usize,
-        w!("Open DLSS 5 Studio"),
+        PCWSTR(open_label.as_ptr()),
     );
 
     let startup_checked = if is_startup_enabled() {
@@ -342,7 +349,7 @@ unsafe fn show_tray_context_menu(hwnd: HWND) {
         hmenu,
         MF_STRING | startup_checked,
         CMD_RUN_ON_STARTUP as usize,
-        w!("Run on startup"),
+        PCWSTR(startup_label.as_ptr()),
     );
 
     let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, None);
@@ -351,7 +358,7 @@ unsafe fn show_tray_context_menu(hwnd: HWND) {
         hmenu,
         MF_STRING,
         CMD_EXIT as usize,
-        w!("Exit DLSS 5 Studio"),
+        PCWSTR(exit_label.as_ptr()),
     );
 
     let _ = SetMenuDefaultItem(hmenu, CMD_OPEN, 0);

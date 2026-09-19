@@ -16,12 +16,12 @@ pub enum FrameGenBackend {
 }
 
 impl FrameGenBackend {
-    pub fn label(self) -> &'static str {
+    pub fn label(self, lang: &str) -> &'static str {
         match self {
-            Self::None => "Disabled",
-            Self::RenoDxAda => "RenoDX Ada MFG",
-            Self::DlssgSm86 => "DLSSG SM86 (experimental, RTX 30)",
-            Self::RtxMfg => "Standalone RTXMFG",
+            Self::None => crate::core::i18n::t(lang, "backend_fg_disabled"),
+            Self::RenoDxAda => crate::core::i18n::t(lang, "backend_fg_renodx_ada"),
+            Self::DlssgSm86 => crate::core::i18n::t(lang, "backend_fg_dlssg_sm86"),
+            Self::RtxMfg => crate::core::i18n::t(lang, "backend_fg_rtx_mfg"),
         }
     }
 }

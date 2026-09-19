@@ -237,13 +237,16 @@ pub fn App() -> Element {
     let init_recents = init_state.recents.clone();
     let init_hidden_count = init_state.hidden.len();
 
-    let mut gpus = use_signal(|| vec![GpuInfo {
-        name: "Detecting GPU...".to_string(),
-        vendor_id: 0,
-        device_id: 0,
-        dedicated_video_memory: 0,
-        is_rtx_40: false,
-    }]);
+    let mut gpus = use_signal({
+        let init_lang = init_lang.clone();
+        move || vec![GpuInfo {
+            name: crate::core::i18n::t(&init_lang, "diag_gpu_detecting").to_string(),
+            vendor_id: 0,
+            device_id: 0,
+            dedicated_video_memory: 0,
+            is_rtx_40: false,
+        }]
+    });
     let mut games = use_signal(move || init_cached_games);
     let recents = use_signal(move || init_recents);
     let mut hidden_count = use_signal(move || init_hidden_count);
@@ -298,11 +301,11 @@ pub fn App() -> Element {
     });
 
     // Automated background component downloader
-    let mut component_download_status = use_signal(|| {
+    let mut component_download_status = use_signal(move || {
         if crate::core::downloader::are_all_mandatory_components_cached() {
             None
         } else {
-            Some("Checking components...".to_string())
+            Some(crate::core::i18n::t(&current_lang.read(), "status_checking_components").to_string())
         }
     });
     let mut trigger_component_download = use_signal(|| 0usize);
@@ -381,9 +384,9 @@ pub fn App() -> Element {
     let mut mfg_multiplier = use_signal(|| 4u32);
     let mut nr_style_choice = use_signal(|| true);
     let mut nr_style_preset = use_signal(|| 0usize);
-    let mut job_lines = use_signal(|| vec!["Ready".to_string()]);
+    let mut job_lines = use_signal(move || vec![crate::core::i18n::t(&current_lang.read(), "status_ready").to_string()]);
     let mut copy_toast = use_signal(|| false);
-    let mut copy_toast_text = use_signal(|| "Copied to clipboard".to_string());
+    let mut copy_toast_text = use_signal(move || crate::core::i18n::t(&current_lang.read(), "toast_copied_clipboard").to_string());
 
     // Settings state
     let mut group_games_by_store = use_signal(move || init_group);
@@ -413,7 +416,7 @@ pub fn App() -> Element {
     let init_preview_open = std::env::var("DLSS_TEST_PREVIEW").is_ok();
     let mut overlay_preview_open = use_signal(move || init_preview_open);
     let preview_theme_id = use_signal(|| "green".to_string());
-    let mut custom_theme_name = use_signal(|| "My Theme".to_string());
+    let mut custom_theme_name = use_signal(move || crate::core::i18n::t(&current_lang.read(), "theme_default_name").to_string());
     let mut custom_theme_color = use_signal(|| "#ff7a00".to_string());
     let mut is_busy = use_signal(|| false);
 
@@ -454,7 +457,7 @@ pub fn App() -> Element {
             }
 
             if !*is_downloading_components.read() {
-                status_text.set("Scanning library in background...".to_string());
+                status_text.set(crate::core::i18n::t(&current_lang.read(), "status_scanning_library").to_string());
                 status_state.set(AppStatus::ScanningLibrary);
                 status_percent.set(30.0);
             }
@@ -518,7 +521,7 @@ pub fn App() -> Element {
             activity_log.set(get_session_log());
 
             if !*is_downloading_components.read() {
-                status_text.set("Ready".to_string());
+                status_text.set(crate::core::i18n::t(&current_lang.read(), "status_ready").to_string());
                 status_state.set(AppStatus::Ready);
                 status_percent.set(100.0);
             }
@@ -530,7 +533,7 @@ pub fn App() -> Element {
         detected.iter().find(|gpu| gpu.vendor_id == 0x10de)
             .or_else(|| detected.first()).cloned()
     }.unwrap_or_else(|| GpuInfo {
-        name: "GPU not detected".to_string(),
+        name: crate::core::i18n::t(&current_lang.read(), "diag_gpu_not_detected").to_string(),
         vendor_id: 0,
         device_id: 0,
         dedicated_video_memory: 0,
@@ -862,7 +865,7 @@ pub fn App() -> Element {
                                 id: "browseBtn",
                                 onclick: move |_| {
                                     spawn(async move {
-                                        if let Some(handle) = rfd::AsyncFileDialog::new().set_title("Browse for game folder").pick_folder().await {
+                                        if let Some(handle) = rfd::AsyncFileDialog::new().set_title(crate::core::i18n::t(&current_lang.read(), "dlg_title_browse_folder")).pick_folder().await {
                                             let folder = handle.path().to_path_buf();
                                             let maybe_game = tokio::task::spawn_blocking({
                                                 let folder = folder.clone();
@@ -941,7 +944,7 @@ pub fn App() -> Element {
                                                 let poster_opt = game.poster.as_ref().map(|p| crate::core::steamart::normalize_art_uri(p));
                                                 let is_dlss5 = game.is_dlss5_patched();
                                                 let launch_tooltip = if is_dlss5 {
-                                                    crate::core::i18n::t_params(&current_lang.read(), "tooltip_launch_game_modded", &[&g_name, game.route_display_name()])
+                                                    crate::core::i18n::t_params(&current_lang.read(), "tooltip_launch_game_modded", &[&g_name, game.route_display_name_lang(&current_lang.read())])
                                                 } else {
                                                     crate::core::i18n::t_param(&current_lang.read(), "tooltip_launch_game_vanilla", &g_name)
                                                 };
@@ -961,7 +964,7 @@ pub fn App() -> Element {
                                                                     let dir = g_dir.clone();
                                                                     move |e: MouseEvent| {
                                                                         e.stop_propagation();
-                                                                        pick_and_set_cover(&dir, games);
+                                                                        pick_and_set_cover(&dir, games, current_lang.read().clone());
                                                                     }
                                                                 },
                                                                 svg {
@@ -1122,7 +1125,7 @@ pub fn App() -> Element {
                                      id: "addGame",
                                      onclick: move |_| {
                                          spawn(async move {
-                                             if let Some(handle) = rfd::AsyncFileDialog::new().set_title("Add one game").pick_folder().await {
+                                             if let Some(handle) = rfd::AsyncFileDialog::new().set_title(crate::core::i18n::t(&current_lang.read(), "dlg_title_add_game")).pick_folder().await {
                                                  let folder = handle.path().to_path_buf();
                                                  let maybe_game = tokio::task::spawn_blocking({
                                                      let folder = folder.clone();
@@ -1159,9 +1162,9 @@ pub fn App() -> Element {
                                      id: "addFolder",
                                      onclick: move |_| {
                                          spawn(async move {
-                                             if let Some(handle) = rfd::AsyncFileDialog::new().set_title("Scan this folder for games").pick_folder().await {
+                                             if let Some(handle) = rfd::AsyncFileDialog::new().set_title(crate::core::i18n::t(&current_lang.read(), "dlg_title_scan_folder")).pick_folder().await {
                                                  let folder = handle.path().to_path_buf();
-                                                 status_text.set("Scanning selected folder for games...".to_string());
+                                                 status_text.set(crate::core::i18n::t(&current_lang.read(), "status_scanning_folder").to_string());
                                                   status_state.set(AppStatus::ScanningFolder(folder.file_name().unwrap_or_default().to_string_lossy().to_string()));
                                                  status_percent.set(50.0);
                                                  let folder_games = tokio::task::spawn_blocking({
@@ -1191,7 +1194,7 @@ pub fn App() -> Element {
                                                  if !missing.is_empty() {
                                                      trigger_artwork_resolution(games, missing);
                                                  }
-                                                 status_text.set("Ready".to_string());
+                                                 status_text.set(crate::core::i18n::t(&current_lang.read(), "status_ready").to_string());
                                                  status_state.set(AppStatus::Ready);
                                                  status_percent.set(100.0);
                                              }
@@ -1205,7 +1208,7 @@ pub fn App() -> Element {
                                      onclick: move |_| {
                                          spawn(async move {
                                              if !*is_downloading_components.read() {
-                                                 status_text.set("Scanning launchers and custom folders...".to_string());
+                                                 status_text.set(crate::core::i18n::t(&current_lang.read(), "status_scanning_launchers").to_string());
                                                  status_state.set(AppStatus::ScanningLaunchers);
                                                  status_percent.set(30.0);
                                              }
@@ -1385,7 +1388,7 @@ pub fn App() -> Element {
                                                                 let poster_opt = game.poster.as_ref().map(|p| crate::core::steamart::normalize_art_uri(p));
                                                                 let is_dlss5 = game.is_dlss5_patched();
                                                                 let launch_tooltip = if is_dlss5 {
-                                                                    crate::core::i18n::t_params(&current_lang.read(), "tooltip_launch_game_modded", &[&g_name, game.route_display_name()])
+                                                                    crate::core::i18n::t_params(&current_lang.read(), "tooltip_launch_game_modded", &[&g_name, game.route_display_name_lang(&current_lang.read())])
                                                                 } else {
                                                                     crate::core::i18n::t_param(&current_lang.read(), "tooltip_launch_game_vanilla", &g_name)
                                                                 };
@@ -1405,7 +1408,7 @@ pub fn App() -> Element {
                                                                                     let dir = g_dir.clone();
                                                                                     move |e: MouseEvent| {
                                                                                         e.stop_propagation();
-                                                                                        pick_and_set_cover(&dir, games);
+                                                                                        pick_and_set_cover(&dir, games, current_lang.read().clone());
                                                                                     }
                                                                                 },
                                                                                 svg {
@@ -1511,7 +1514,7 @@ pub fn App() -> Element {
                                             let poster_opt = game.poster.as_ref().map(|p| crate::core::steamart::normalize_art_uri(p));
                                             let is_dlss5 = game.is_dlss5_patched();
                                             let launch_tooltip = if is_dlss5 {
-                                                crate::core::i18n::t_params(&current_lang.read(), "tooltip_launch_game_modded", &[&g_name, game.route_display_name()])
+                                                crate::core::i18n::t_params(&current_lang.read(), "tooltip_launch_game_modded", &[&g_name, game.route_display_name_lang(&current_lang.read())])
                                             } else {
                                                 crate::core::i18n::t_param(&current_lang.read(), "tooltip_launch_game_vanilla", &g_name)
                                             };
@@ -1531,7 +1534,7 @@ pub fn App() -> Element {
                                                                 let dir = g_dir.clone();
                                                                 move |e: MouseEvent| {
                                                                     e.stop_propagation();
-                                                                    pick_and_set_cover(&dir, games);
+                                                                    pick_and_set_cover(&dir, games, current_lang.read().clone());
                                                                 }
                                                             },
                                                             svg {
@@ -1627,7 +1630,7 @@ pub fn App() -> Element {
                                 onclick: move |_| {
                                     spawn(async move {
                                         if let Some(handle) = rfd::AsyncFileDialog::new()
-                                            .set_title("Add an add-on build")
+                                            .set_title(crate::core::i18n::t(&current_lang.read(), "dlg_title_add_addon_build"))
                                             .add_filter("ReShade add-on", &["addon64", "addon"])
                                             .pick_file()
                                             .await
@@ -1994,7 +1997,8 @@ pub fn App() -> Element {
                                     let path_str = custom.path.clone();
                                     let is_act = addons_active.read().contains(&path_str);
                                     let name_display = custom.name.clone().unwrap_or_else(|| {
-                                        std::path::Path::new(&path_str).file_name().and_then(|n| n.to_str()).unwrap_or("Custom Add-on").to_string()
+                                        std::path::Path::new(&path_str).file_name().and_then(|n| n.to_str()).map(|s| s.to_string())
+                                            .unwrap_or_else(|| crate::core::i18n::t(&current_lang.read(), "addon_custom_fallback_name").to_string())
                                     });
                                     let fname = std::path::Path::new(&path_str).file_name().and_then(|n| n.to_str()).unwrap_or("addon").to_string();
                                     let tag_display = custom.tag.clone();
@@ -2410,7 +2414,7 @@ pub fn App() -> Element {
                                         title: "{crate::core::i18n::t(&current_lang.read(), \"settings_add_folder\")}",
                                         onclick: move |_| {
                                             spawn(async move {
-                                                if let Some(handle) = rfd::AsyncFileDialog::new().set_title("Scan this folder for games").pick_folder().await {
+                                                if let Some(handle) = rfd::AsyncFileDialog::new().set_title(crate::core::i18n::t(&current_lang.read(), "dlg_title_scan_folder")).pick_folder().await {
                                                     let folder = handle.path().to_path_buf();
                                                     let folder_games = tokio::task::spawn_blocking({
                                                         let folder = folder.clone();
@@ -2506,7 +2510,7 @@ pub fn App() -> Element {
                                             games.set(deduped);
                                             hidden_count.set(0);
                                             crate::core::logger::info("library", &format!("Restored {} hidden game(s)", count));
-                                            copy_toast_text.set(format!("Restored {} hidden game(s)", count));
+                                            copy_toast_text.set(crate::core::i18n::t_param(&current_lang.read(), "toast_hidden_restored", &count.to_string()));
                                             copy_toast.set(true);
                                         },
                                         "{crate::core::i18n::t(&current_lang.read(), \"settings_unhide_all\")}"
@@ -2697,7 +2701,7 @@ pub fn App() -> Element {
                         };
                         let is_dlss5 = target_game.is_dlss5_patched();
                         let launch_tooltip = if is_dlss5 {
-                            crate::core::i18n::t_params(&current_lang.read(), "tooltip_launch_game_modded", &[&target_game.name, target_game.route_display_name()])
+                            crate::core::i18n::t_params(&current_lang.read(), "tooltip_launch_game_modded", &[&target_game.name, target_game.route_display_name_lang(&current_lang.read())])
                         } else {
                             crate::core::i18n::t_param(&current_lang.read(), "tooltip_launch_game_vanilla", &target_game.name)
                         };
@@ -2734,7 +2738,7 @@ pub fn App() -> Element {
                                             let dir = target_game.dir.clone();
                                             move |e: MouseEvent| {
                                                 e.stop_propagation();
-                                                pick_and_set_cover(&dir, games);
+                                                pick_and_set_cover(&dir, games, current_lang.read().clone());
                                             }
                                         },
                                         if let Some(ref p_url) = cover_url {
@@ -3127,8 +3131,8 @@ pub fn App() -> Element {
                                                             r#for: "chkMfg",
                                                             class: "t-left",
                                                             style: "cursor: pointer;",
-                                                            span { "Frame Generation" }
-                                                            span { class: "tag warn", "{fg_capability.backend.label()}" }
+                                                            span { "{crate::core::i18n::t(&current_lang.read(), \"spec_frame_generation\")}" }
+                                                            span { class: "tag warn", "{fg_capability.backend.label(&current_lang.read())}" }
                                                         }
                                                         div { class: "passes-ctrl",
                                                             span { "{crate::core::i18n::t(&current_lang.read(), \"sheet_mfg_multiplier\")}" }
@@ -3137,15 +3141,15 @@ pub fn App() -> Element {
                                                                 value: "{mfg_multiplier}",
                                                                 disabled: !*mfg_choice.read(),
                                                                 onchange: move |e| mfg_multiplier.set(e.value().parse::<u32>().unwrap_or(4)),
-                                                                if !is_sm86 { option { value: "1", "1x (Auto)" } }
+                                                                if !is_sm86 { option { value: "1", "{crate::core::i18n::t(&current_lang.read(), \"mfg_multiplier_auto\")}" } }
                                                                 option { value: "2", "2x" }
                                                                 option { value: "3", "3x" }
-                                                                option { value: "4", "4x (Default)" }
+                                                                option { value: "4", "{crate::core::i18n::t(&current_lang.read(), \"mfg_multiplier_default\")}" }
                                                             }
                                                         }
                                                     }
                                                     if is_sm86 {
-                                                        div { class: "d", "Experimental RTX 30 support. Downloads the third-party DLSSG SM86 0.3.3 runtime and notices from upstream. The multiplier is a ceiling: enable DLSS Frame Generation in the game. Requires four free proxy slots; real-game compatibility is not guaranteed. Review upstream and NVIDIA resource terms before use or redistribution." }
+                                                        div { class: "d", "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_sm86_desc\")}" }
                                                     } else {
                                                         div { class: "d", "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_desc\")}" }
                                                     }
@@ -3154,8 +3158,8 @@ pub fn App() -> Element {
                                         } else {
                                             div {
                                                 class: "emu-note",
-                                                b { "Frame Generation unavailable" }
-                                                span { "{fg_capability.reason.unwrap_or(\"Unsupported configuration\")}" }
+                                                b { "{crate::core::i18n::t(&current_lang.read(), \"feature_fg_unavailable\")}" }
+                                                span { "{fg_capability.reason.unwrap_or(crate::core::i18n::t(&current_lang.read(), \"feature_fg_reason_unsupported\"))}" }
                                             }
                                         }
 
@@ -3671,7 +3675,7 @@ pub fn App() -> Element {
                         style: "width: 360px; max-width:90%; background: #181b20; border: 1px solid var(--line); border-radius: 8px; padding: 20px;",
                         onclick: move |e| e.stop_propagation(),
                         h4 { style: "margin-top:0; margin-bottom: 8px;", "{crate::core::i18n::t(&current_lang.read(), \"hotkey_dialog_title\")}" }
-                        p { class: "hint", style: "margin-bottom:16px; font-size:0.85em;", "Select the shortcut to toggle HUD in-game:" }
+                        p { class: "hint", style: "margin-bottom:16px; font-size:0.85em;", "{crate::core::i18n::t(&current_lang.read(), \"hotkey_dialog_hint\")}" }
                         div { style: "display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:16px;",
                             for hk in &["F8", "F9", "F10", "F11", "Ctrl+Shift+O", "Alt+`"] {
                                 {
@@ -3756,7 +3760,7 @@ pub fn App() -> Element {
                                 class: "glass-btn sm",
                                 onclick: move |_| {
                                     let name = if custom_theme_name.read().trim().is_empty() {
-                                        "My Theme".to_string()
+                                        crate::core::i18n::t(&current_lang.read(), "theme_default_name").to_string()
                                     } else {
                                         custom_theme_name.read().trim().to_string()
                                     };
@@ -3819,7 +3823,7 @@ pub fn App() -> Element {
                                     h3 { "{crate::core::i18n::t(&current_lang.read(), \"preview_dialog_title\")} • {p_name}" }
                                     button { class: "ghost sm", onclick: move |_| overlay_preview_open.set(false), "✕" }
                                 }
-                                p { "Interactive RenoDX compact overlay in native resolution (534px). Toggle in-game with {overlay_hotkey.read()}." }
+                                p { "{crate::core::i18n::t_param(&current_lang.read(), \"preview_dialog_desc\", &overlay_hotkey.read())}" }
                                 div { style: "display:flex; justify-content:center; margin: 16px 0; direction:ltr;",
                                     div { class: "ol-panel", style: "width: 534px; max-width: 100%; box-sizing: border-box;",
                                         header {
@@ -4022,11 +4026,11 @@ pub fn launch_game(game: &GameEntry) {
     }
 }
 
-pub fn pick_and_set_cover(dir: &std::path::Path, mut games: Signal<Vec<GameEntry>>) {
+pub fn pick_and_set_cover(dir: &std::path::Path, mut games: Signal<Vec<GameEntry>>, lang: String) {
     let dir = dir.to_path_buf();
     spawn(async move {
         if let Some(handle) = rfd::AsyncFileDialog::new()
-            .set_title("Select Cover Image")
+            .set_title(crate::core::i18n::t(&lang, "dlg_title_select_cover"))
             .add_filter("Images (*.jpg, *.png, *.webp)", &["jpg", "jpeg", "png", "webp", "bmp"])
             .pick_file()
             .await
