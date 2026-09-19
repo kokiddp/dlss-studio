@@ -25,6 +25,12 @@ pub fn managed_mod_root(game_dir: &Path, exe_path: Option<&Path>) -> Option<Path
     None
 }
 
+/// Resolve the directory shared by deployment and installed-settings reads.
+pub fn deployment_mod_root(game_dir: &Path, exe_path: &Path) -> PathBuf {
+    managed_mod_root(game_dir, Some(exe_path))
+        .unwrap_or_else(|| exe_path.parent().unwrap_or(game_dir).to_path_buf())
+}
+
 pub fn missing_vc_runtime(bitness: u32, exe_dir: Option<&Path>) -> Vec<String> {
     let mut missing = Vec::new();
     let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());

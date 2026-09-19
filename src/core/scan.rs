@@ -206,7 +206,7 @@ static RE_CONTAINER: LazyLock<Regex> = LazyLock::new(|| {
 
 pub fn is_installer_or_helper(name: &str) -> bool {
     let lower = name.to_lowercase();
-    if lower == "gamelaunchhelper.exe" || lower.starts_with("gamelaunchhelper") 
+    if lower == "gamelaunchhelper.exe" || lower.starts_with("gamelaunchhelper")
         || lower == "dlss5-feed-host64.exe" || lower.starts_with("dlss5-feed") || lower.contains("feed-host")
         || lower.starts_with("unitycrashhandler") || lower.contains("crashhandler") || lower.contains("crashreport")
         || lower == "unrealcefsubprocess.exe" || lower.contains("cefsubprocess") || lower.contains("webhelper")
@@ -223,7 +223,7 @@ pub fn is_installer_or_helper(name: &str) -> bool {
     {
         return true;
     }
-    if lower.contains("installer") || lower.contains("uninstall") || lower.contains("crashreport") 
+    if lower.contains("installer") || lower.contains("uninstall") || lower.contains("crashreport")
         || lower.contains("crashhandler") || lower.contains("vcredist") || lower.contains("dxsetup")
         || lower.contains("redist") || lower.contains("cleanup") || lower.contains("updater")
         || lower.contains("checker") || lower.contains("subprocess") || lower.contains("cefsharp")
@@ -265,11 +265,11 @@ pub fn is_helper_or_tool_path(path: &Path) -> bool {
 pub fn is_not_a_game_dir(name: &str) -> bool {
     let lower = name.to_lowercase();
     match lower.as_str() {
-        "steamapps" | "gamesave" | "gamesaves" | "workshop" | "downloading" 
-        | "shadercache" | "cache" | "caches" | "temp" | "tmp" | "backup" 
-        | "_dlss5_backup" | "reshade-shaders" | "host64" | "optiscaler" | "save" | "saves" | "savegame" 
-        | "savegames" | "redist" | "commonredist" | "_commonredist" 
-        | "__installer" | "installer" | "installers" | "setup" | "dlc" | "mods" | "mod" 
+        "steamapps" | "gamesave" | "gamesaves" | "workshop" | "downloading"
+        | "shadercache" | "cache" | "caches" | "temp" | "tmp" | "backup"
+        | "_dlss5_backup" | "reshade-shaders" | "host64" | "optiscaler" | "save" | "saves" | "savegame"
+        | "savegames" | "redist" | "commonredist" | "_commonredist"
+        | "__installer" | "installer" | "installers" | "setup" | "dlc" | "mods" | "mod"
         | "tools" | "tool" | "node_modules" | ".git" | "sdk" | "patcher" => return true,
         _ => {}
     }
@@ -411,15 +411,39 @@ pub fn detect_renpy_api(dir: &Path) -> Option<String> {
     Some("OpenGL".to_string())
 }
 
-fn detect_sibling_api(dir: &Path) -> Option<String> {
+fn is_middleware_dll(fname: &str) -> bool {
+    let n_lower = fname.to_lowercase();
+    // DXC also targets SPIR-V for Vulkan; compiler/validator binaries are not renderer evidence.
+    n_lower == "dxcompiler.dll" || n_lower == "dxil.dll"
+        || n_lower.starts_with("sdl") || n_lower.starts_with("bink") || n_lower.starts_with("fmod")
+        || n_lower.starts_with("libxess") || n_lower.starts_with("nvngx") || n_lower.starts_with("amd_")
+        || n_lower.starts_with("galaxy") || n_lower.starts_with("discord") || n_lower.starts_with("steam")
+        || n_lower.starts_with("party") || n_lower.starts_with("playfab") || n_lower.starts_with("libhttpclient")
+        || n_lower.starts_with("crash") || n_lower.starts_with("breakpad") || n_lower.starts_with("sentry")
+        || n_lower.starts_with("bugsplat") || n_lower.starts_with("cef") || n_lower.starts_with("libcef")
+        || n_lower.starts_with("ffmpeg") || n_lower.starts_with("avcodec") || n_lower.starts_with("avformat")
+        || n_lower.starts_with("qt5") || n_lower.starts_with("qt6") || n_lower.starts_with("chrome_elf")
+        || n_lower.starts_with("openimage") || n_lower.starts_with("tbb") || n_lower.starts_with("xcurl")
+        || n_lower.starts_with("coherent") || n_lower.starts_with("physx") || n_lower.starts_with("apex")
+        || n_lower.starts_with("eossdk") || n_lower.starts_with("libcurl") || n_lower.starts_with("msvcp")
+        || n_lower.starts_with("vcruntime") || n_lower.starts_with("api-ms-") || n_lower.starts_with("ucrtbase")
+}
+
+pub fn detect_sibling_api(dir: &Path) -> Option<String> {
     if let Some(api) = detect_renpy_api(dir) {
         return Some(api);
     }
-    if dir.join("D3D12Core.dll").exists() || dir.join("D3D12").join("D3D12Core.dll").exists() {
+    if dir.join("D3D12Core.dll").exists()
+        || dir.join("D3D12").join("D3D12Core.dll").exists()
+        || dir.join("D3D12").is_dir()
+    {
         return Some("DirectX 12".to_string());
     }
 
     let Ok(entries) = fs::read_dir(dir) else { return None; };
+    let mut candidate_dlls: Vec<PathBuf> = Vec::new();
+    let mut fallback_dxgi = false;
+
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_file() {
@@ -428,11 +452,10 @@ fn detect_sibling_api(dir: &Path) -> Option<String> {
                 continue;
             }
             let fname = entry.file_name().to_string_lossy().to_lowercase();
-            // Skip generic middleware DLLs
-            if fname.starts_with("sdl") || fname.starts_with("bink") || fname.starts_with("fmod") 
-                || fname.starts_with("libxess") || fname.starts_with("nvngx") || fname.starts_with("amd_") {
+            if is_middleware_dll(&fname) {
                 continue;
             }
+            // Fast filename shortcuts
             if fname.contains("dx12") || fname.contains("d3d12") {
                 return Some("DirectX 12".to_string());
             }
@@ -448,10 +471,48 @@ fn detect_sibling_api(dir: &Path) -> Option<String> {
             if fname.contains("dx8") || fname.contains("d3d8") {
                 return Some("DirectX 8".to_string());
             }
+
+            candidate_dlls.push(path);
         }
     }
+
+    // Inspect PE imports & markers for candidate graphics DLLs
+    // Prioritize DLLs likely to be rendering engines (d3d*, render*, gfx*, graphics*, etc.)
+    candidate_dlls.sort_by_key(|p| {
+        let fn_str = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+        if fn_str.starts_with("d3d") || fn_str.starts_with("render") || fn_str.starts_with("gfx") || fn_str.starts_with("graphics") {
+            0
+        } else {
+            1
+        }
+    });
+
+    for path in candidate_dlls.iter().take(40) {
+        if let Some(sib_pe) = inspect_pe(path) {
+            if let Some(api) = api_from_names(&sib_pe.imports) {
+                if api == "DirectX (DXGI)" {
+                    fallback_dxgi = true;
+                } else {
+                    return Some(api);
+                }
+            }
+            if let Some(api) = api_from_markers(path) {
+                if api == "DirectX (DXGI)" {
+                    fallback_dxgi = true;
+                } else {
+                    return Some(api);
+                }
+            }
+        }
+    }
+
+    if fallback_dxgi {
+        return Some("DirectX (DXGI)".to_string());
+    }
+
     None
 }
+
 pub fn detect_api_for_exe(path: &Path) -> Option<String> {
     let imports = crate::core::pe::inspect_pe(path).map(|p| p.imports).unwrap_or_default();
     detect_api(path, &imports)
@@ -493,19 +554,11 @@ pub fn detect_api(path: &Path, imports: &[String]) -> Option<String> {
         return Some("OpenGL".to_string());
     }
     if let Some(parent) = path.parent() {
-        // Check imported sibling DLLs (Control's d3d_rmdwin10_f.dll, Ren'Py's librenpython.dll, Relic's spdx9.dll)
+        // Check imported sibling DLLs (Control's d3d_rmdwin10_f.dll / d3d_rmdutggamepass_f.dll, Ren'Py's librenpython.dll, Relic's spdx9.dll)
         // Skip generic third-party middleware (SDL, Bink, audio engines, upscalers, store SDKs, crash reporters, webviews)
         let mut fallback_dxgi = false;
         for name in imports.iter().take(80) {
-            let n_lower = name.to_lowercase();
-            if n_lower.starts_with("sdl") || n_lower.starts_with("bink") || n_lower.starts_with("fmod") 
-                || n_lower.starts_with("libxess") || n_lower.starts_with("nvngx") || n_lower.starts_with("amd_")
-                || n_lower.starts_with("galaxy") || n_lower.starts_with("discord") || n_lower.starts_with("steam")
-                || n_lower.starts_with("party") || n_lower.starts_with("playfab")
-                || n_lower.starts_with("crash") || n_lower.starts_with("breakpad") || n_lower.starts_with("sentry")
-                || n_lower.starts_with("bugsplat") || n_lower.starts_with("cef") || n_lower.starts_with("libcef")
-                || n_lower.starts_with("ffmpeg") || n_lower.starts_with("avcodec") || n_lower.starts_with("avformat")
-                || n_lower.starts_with("qt5") || n_lower.starts_with("qt6") || n_lower.starts_with("chrome_elf") {
+            if is_middleware_dll(name) {
                 continue;
             }
             let sib_path = parent.join(name);
@@ -1149,10 +1202,16 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
     }
 
     // GDK / MicrosoftGame.config fallback:
-    // If Xbox declared and api is DirectX 12 without explicit D3D12 SDK, label as DirectX 11/12
+    // Require renderer evidence for a declared DX12 executable, not just bundled shader tools.
     let api = if chosen.declared && chosen.api == "DirectX 12" {
-        let has_d3d12_sdk = chosen.path.parent().map(|p| p.join("D3D12Core.dll").exists() || p.join("D3D12").join("D3D12Core.dll").exists()).unwrap_or(false);
-        if !has_d3d12_sdk {
+        let has_d3d12_evidence = detect_api_for_exe(&chosen.path).as_deref() == Some("DirectX 12")
+            || chosen.path.parent().map(|p| {
+            p.join("D3D12Core.dll").exists()
+                || p.join("D3D12").join("D3D12Core.dll").exists()
+                || p.join("D3D12").is_dir()
+                || detect_sibling_api(p).as_deref() == Some("DirectX 12")
+        }).unwrap_or(false);
+        if !has_d3d12_evidence {
             "DirectX 11/12".to_string()
         } else {
             chosen.api.clone()
@@ -2473,6 +2532,115 @@ mod tests {
         if dow_dir.is_dir() {
             let game = scan_game_directory(dow_dir).expect("Dawn of War must scan");
             assert_eq!(game.api, "DirectX 9", "Dawn of War must resolve to DirectX 9");
+        }
+    }
+
+    fn graphics_pe_fixture(marker: &[u8]) -> Vec<u8> {
+        let mut data = vec![0u8; 4096];
+        data[0..2].copy_from_slice(b"MZ");
+        data[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        data[0x80..0x84].copy_from_slice(b"PE\0\0");
+        data[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        data[0x94..0x96].copy_from_slice(&0xF0u16.to_le_bytes());
+        data[0x98..0x9A].copy_from_slice(&0x020Bu16.to_le_bytes());
+        data[1024..1024 + marker.len()].copy_from_slice(marker);
+        data
+    }
+
+    #[test]
+    fn shader_compilers_do_not_identify_the_graphics_api() {
+        let dir = std::env::temp_dir().join(format!("test_dxc_api_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("game.exe");
+        fs::write(&exe, b"MZ game stub").unwrap();
+        // Even renderer-like strings inside compiler binaries must be ignored.
+        for name in ["dxcompiler.dll", "dxil.dll"] {
+            fs::write(dir.join(name), graphics_pe_fixture(b"D3D12CreateDevice\0")).unwrap();
+        }
+        assert_eq!(detect_sibling_api(&dir), None);
+        assert_eq!(detect_api(&exe, &["dxcompiler.dll".into(), "dxil.dll".into()]), None);
+        assert_eq!(scan_game_directory(&dir).unwrap().api, "Undetected");
+
+        let renderer = dir.join("renderer.dll");
+        fs::write(&renderer, graphics_pe_fixture(b"vkCreateInstance\0")).unwrap();
+        assert_eq!(inspect_pe(&renderer).unwrap().bitness, 64);
+        assert_eq!(detect_sibling_api(&dir).as_deref(), Some("Vulkan"));
+        assert_eq!(scan_game_directory(&dir).unwrap().api, "Vulkan");
+        // Imported engine DLLs and explicit executable imports agree with the directory scan.
+        assert_eq!(detect_api(&exe, &["dxcompiler.dll".into(), "renderer.dll".into()]).as_deref(), Some("Vulkan"));
+        assert_eq!(detect_api(&exe, &["vulkan-1.dll".into()]).as_deref(), Some("Vulkan"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn test_control_pcgp_synthetic_detection() {
+        let temp_dir = std::env::temp_dir().join(format!("test_control_pcgp_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // Write synthetic MicrosoftGame.config
+        let cfg = r#"<?xml version="1.0" encoding="utf-8"?>
+<Game configVersion="0">
+  <ExecutableList>
+    <Executable Name="Game_rmdutggamepass_f.exe" Id="Game" TargetDeviceFamily="PC" />
+  </ExecutableList>
+  <ShellVisuals DefaultDisplayName="Control PCGP" Description="Control" />
+  <DesktopRegistration>
+    <ProcessorArchitecture>x64</ProcessorArchitecture>
+  </DesktopRegistration>
+</Game>"#;
+        fs::write(temp_dir.join("MicrosoftGame.config"), cfg).unwrap();
+
+        // Write dummy exe
+        fs::write(temp_dir.join("Game_rmdutggamepass_f.exe"), b"MZ dummy exe").unwrap();
+
+        // Shader tools alone do not identify the renderer.
+        fs::write(temp_dir.join("dxcompiler.dll"), b"MZ dxcompiler").unwrap();
+        fs::write(temp_dir.join("dxil.dll"), b"MZ dxil").unwrap();
+
+        // Write sibling d3d_rmdutggamepass_f.dll with D3D12CreateDevice marker
+        let d3d_dll = graphics_pe_fixture(b"D3D12CreateDevice\0");
+        fs::write(temp_dir.join("d3d_rmdutggamepass_f.dll"), &d3d_dll).unwrap();
+
+        // Write dummy DLSS dll
+        fs::write(temp_dir.join("nvngx_dlss.dll"), b"MZ dlss").unwrap();
+
+        let sibling_api = detect_sibling_api(&temp_dir);
+        assert_eq!(sibling_api, Some("DirectX 12".to_string()), "detect_sibling_api must detect DirectX 12 via the sibling engine DLL");
+
+        let game = scan_game_directory(&temp_dir).expect("Synthetic Control PCGP must scan");
+        assert_eq!(game.name, "Control PCGP");
+        assert_eq!(game.api, "DirectX 12");
+        assert_eq!(game.bitness, 64);
+        assert!(game.dlss_version.is_some() || temp_dir.join("nvngx_dlss.dll").exists());
+
+        // Verify routes when DLSS is present
+        let mut game_with_dlss = game.clone();
+        game_with_dlss.dlss_version = Some("2.1.25.0".to_string());
+        let routes = crate::core::install_routes::routes_for(&game_with_dlss);
+        assert!(routes.contains(&crate::core::install_routes::InstallRoute::Native), "Control PCGP must support Native route");
+        assert!(routes.contains(&crate::core::install_routes::InstallRoute::Feeder), "Control PCGP must support Feeder route");
+        assert!(routes.contains(&crate::core::install_routes::InstallRoute::OptiScaler), "Control PCGP must support OptiScaler route");
+
+        // The engine evidence, not DXC or Xbox metadata, determines DX12.
+        fs::remove_file(temp_dir.join("d3d_rmdutggamepass_f.dll")).unwrap();
+        assert_eq!(scan_game_directory(&temp_dir).unwrap().api, "Undetected");
+        fs::write(temp_dir.join("Game_rmdutggamepass_f.exe"), graphics_pe_fixture(b"D3D12CreateDevice\0")).unwrap();
+        assert_eq!(scan_game_directory(&temp_dir).unwrap().api, "DirectX 12");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_control_pcgp_live_detection() {
+        let live_path = Path::new(r"D:\WindowsApps\505GAMESS.P.A.ControlPCGP_1.0.6.0_x64__tefn33qh9azfc");
+        if live_path.is_dir() {
+            let game = scan_game_directory(live_path).expect("Live Control PCGP must scan");
+            println!("Live Control PCGP scanned: API={}, DLSS={:?}", game.api, game.dlss_version);
+            assert_eq!(game.api, "DirectX 12", "Live Control PCGP must detect as DirectX 12");
+            let routes = crate::core::install_routes::routes_for(&game);
+            assert!(routes.contains(&crate::core::install_routes::InstallRoute::Native), "Live Control PCGP must support Native DLSS");
+            assert!(routes.contains(&crate::core::install_routes::InstallRoute::OptiScaler), "Live Control PCGP must support OptiScaler");
+            assert!(routes.contains(&crate::core::install_routes::InstallRoute::Feeder), "Live Control PCGP must support Feeder");
         }
     }
 }
