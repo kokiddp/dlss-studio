@@ -330,6 +330,31 @@ mod tests {
     }
 
     #[test]
+    fn installed_ceiling_uses_the_deployment_directory_for_all_layouts() {
+        use crate::core::compatibility::deployment_mod_root;
+        let dir = std::env::temp_dir().join(format!("sm86-ceiling-layouts-{}", std::process::id()));
+        for layout in ["ordinary", "nested", "mod-organizer"] {
+            let root = dir.join(layout);
+            let game_dir = if layout == "mod-organizer" { root.join("Stock Game") } else { root.clone() };
+            let exe_dir = if layout == "ordinary" { game_dir.clone() } else { game_dir.join("bin/x64") };
+            fs::create_dir_all(&exe_dir).unwrap();
+            if layout == "mod-organizer" {
+                fs::write(root.join("ModOrganizer.exe"), b"manager").unwrap();
+            }
+            let expected = if layout == "mod-organizer" { &root } else { &exe_dir };
+            assert_eq!(deployment_mod_root(&game_dir, &exe_dir.join("game.exe")), *expected);
+            for ceiling in 2..=4 {
+                // A stale INI in the game root must not override the actual deployment.
+                fs::write(game_dir.join(INI_NAME), configure_ini("", 4).unwrap()).unwrap();
+                fs::write(expected.join(INI_NAME), configure_ini("", ceiling).unwrap()).unwrap();
+                let resolved = deployment_mod_root(&game_dir, &exe_dir.join("game.exe"));
+                assert_eq!(installed_multiplier(&resolved), Some(ceiling), "{layout}");
+            }
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn reads_installed_sm86_ceiling_without_leaking_an_invalid_value() {
         let dir = std::env::temp_dir().join(format!("sm86-ceiling-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();

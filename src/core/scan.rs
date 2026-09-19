@@ -409,7 +409,9 @@ pub fn detect_renpy_api(dir: &Path) -> Option<String> {
 
 fn is_middleware_dll(fname: &str) -> bool {
     let n_lower = fname.to_lowercase();
-    n_lower.starts_with("sdl") || n_lower.starts_with("bink") || n_lower.starts_with("fmod")
+    // DXC also targets SPIR-V for Vulkan; compiler/validator binaries are not renderer evidence.
+    n_lower == "dxcompiler.dll" || n_lower == "dxil.dll"
+        || n_lower.starts_with("sdl") || n_lower.starts_with("bink") || n_lower.starts_with("fmod")
         || n_lower.starts_with("libxess") || n_lower.starts_with("nvngx") || n_lower.starts_with("amd_")
         || n_lower.starts_with("galaxy") || n_lower.starts_with("discord") || n_lower.starts_with("steam")
         || n_lower.starts_with("party") || n_lower.starts_with("playfab") || n_lower.starts_with("libhttpclient")
@@ -431,10 +433,6 @@ pub fn detect_sibling_api(dir: &Path) -> Option<String> {
         || dir.join("D3D12").join("D3D12Core.dll").exists()
         || dir.join("D3D12").is_dir()
     {
-        return Some("DirectX 12".to_string());
-    }
-    // DirectX 12 Shader Model 6 (DXC) compiler is exclusive to DirectX 12 and DXR ray tracing
-    if dir.join("dxcompiler.dll").exists() || dir.join("dxil.dll").exists() {
         return Some("DirectX 12".to_string());
     }
 
@@ -1200,16 +1198,16 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
     }
 
     // GDK / MicrosoftGame.config fallback:
-    // If Xbox declared and api is DirectX 12 without explicit D3D12 SDK, label as DirectX 11/12
+    // Require renderer evidence for a declared DX12 executable, not just bundled shader tools.
     let api = if chosen.declared && chosen.api == "DirectX 12" {
-        let has_d3d12_sdk = chosen.path.parent().map(|p| {
+        let has_d3d12_evidence = detect_api_for_exe(&chosen.path).as_deref() == Some("DirectX 12")
+            || chosen.path.parent().map(|p| {
             p.join("D3D12Core.dll").exists()
                 || p.join("D3D12").join("D3D12Core.dll").exists()
                 || p.join("D3D12").is_dir()
-                || p.join("dxcompiler.dll").exists()
-                || p.join("dxil.dll").exists()
+                || detect_sibling_api(p).as_deref() == Some("DirectX 12")
         }).unwrap_or(false);
-        if !has_d3d12_sdk {
+        if !has_d3d12_evidence {
             "DirectX 11/12".to_string()
         } else {
             chosen.api.clone()
@@ -2533,6 +2531,43 @@ mod tests {
         }
     }
 
+    fn graphics_pe_fixture(marker: &[u8]) -> Vec<u8> {
+        let mut data = vec![0u8; 4096];
+        data[0..2].copy_from_slice(b"MZ");
+        data[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        data[0x80..0x84].copy_from_slice(b"PE\0\0");
+        data[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        data[0x94..0x96].copy_from_slice(&0xF0u16.to_le_bytes());
+        data[0x98..0x9A].copy_from_slice(&0x020Bu16.to_le_bytes());
+        data[1024..1024 + marker.len()].copy_from_slice(marker);
+        data
+    }
+
+    #[test]
+    fn shader_compilers_do_not_identify_the_graphics_api() {
+        let dir = std::env::temp_dir().join(format!("test_dxc_api_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("game.exe");
+        fs::write(&exe, b"MZ game stub").unwrap();
+        // Even renderer-like strings inside compiler binaries must be ignored.
+        for name in ["dxcompiler.dll", "dxil.dll"] {
+            fs::write(dir.join(name), graphics_pe_fixture(b"D3D12CreateDevice\0")).unwrap();
+        }
+        assert_eq!(detect_sibling_api(&dir), None);
+        assert_eq!(detect_api(&exe, &["dxcompiler.dll".into(), "dxil.dll".into()]), None);
+        assert_eq!(scan_game_directory(&dir).unwrap().api, "Undetected");
+
+        let renderer = dir.join("renderer.dll");
+        fs::write(&renderer, graphics_pe_fixture(b"vkCreateInstance\0")).unwrap();
+        assert_eq!(inspect_pe(&renderer).unwrap().bitness, 64);
+        assert_eq!(detect_sibling_api(&dir).as_deref(), Some("Vulkan"));
+        assert_eq!(scan_game_directory(&dir).unwrap().api, "Vulkan");
+        // Imported engine DLLs and explicit executable imports agree with the directory scan.
+        assert_eq!(detect_api(&exe, &["dxcompiler.dll".into(), "renderer.dll".into()]).as_deref(), Some("Vulkan"));
+        assert_eq!(detect_api(&exe, &["vulkan-1.dll".into()]).as_deref(), Some("Vulkan"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn test_control_pcgp_synthetic_detection() {
         let temp_dir = std::env::temp_dir().join(format!("test_control_pcgp_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -2554,20 +2589,19 @@ mod tests {
         // Write dummy exe
         fs::write(temp_dir.join("Game_rmdutggamepass_f.exe"), b"MZ dummy exe").unwrap();
 
-        // Write dxcompiler.dll (DX12 compiler marker)
+        // Shader tools alone do not identify the renderer.
         fs::write(temp_dir.join("dxcompiler.dll"), b"MZ dxcompiler").unwrap();
         fs::write(temp_dir.join("dxil.dll"), b"MZ dxil").unwrap();
 
         // Write sibling d3d_rmdutggamepass_f.dll with D3D12CreateDevice marker
-        let mut d3d_dll = vec![0u8; 4096];
-        d3d_dll[100..118].copy_from_slice(b"D3D12CreateDevice\0");
+        let d3d_dll = graphics_pe_fixture(b"D3D12CreateDevice\0");
         fs::write(temp_dir.join("d3d_rmdutggamepass_f.dll"), &d3d_dll).unwrap();
 
         // Write dummy DLSS dll
         fs::write(temp_dir.join("nvngx_dlss.dll"), b"MZ dlss").unwrap();
 
         let sibling_api = detect_sibling_api(&temp_dir);
-        assert_eq!(sibling_api, Some("DirectX 12".to_string()), "detect_sibling_api must detect DirectX 12 via dxcompiler and sibling d3d dll");
+        assert_eq!(sibling_api, Some("DirectX 12".to_string()), "detect_sibling_api must detect DirectX 12 via the sibling engine DLL");
 
         let game = scan_game_directory(&temp_dir).expect("Synthetic Control PCGP must scan");
         assert_eq!(game.name, "Control PCGP");
@@ -2582,6 +2616,12 @@ mod tests {
         assert!(routes.contains(&crate::core::install_routes::InstallRoute::Native), "Control PCGP must support Native route");
         assert!(routes.contains(&crate::core::install_routes::InstallRoute::Feeder), "Control PCGP must support Feeder route");
         assert!(routes.contains(&crate::core::install_routes::InstallRoute::OptiScaler), "Control PCGP must support OptiScaler route");
+
+        // The engine evidence, not DXC or Xbox metadata, determines DX12.
+        fs::remove_file(temp_dir.join("d3d_rmdutggamepass_f.dll")).unwrap();
+        assert_eq!(scan_game_directory(&temp_dir).unwrap().api, "Undetected");
+        fs::write(temp_dir.join("Game_rmdutggamepass_f.exe"), graphics_pe_fixture(b"D3D12CreateDevice\0")).unwrap();
+        assert_eq!(scan_game_directory(&temp_dir).unwrap().api, "DirectX 12");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

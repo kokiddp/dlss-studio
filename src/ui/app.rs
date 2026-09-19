@@ -589,7 +589,7 @@ pub fn App() -> Element {
                         nr_style_choice.set(g.nr_style > 0);
                         let sm86_ceiling = crate::core::journal::read_manifest(&g.dir)
                             .filter(|m| m.frame_gen_backend == Some(crate::core::framegen::FrameGenBackend::DlssgSm86))
-                            .and_then(|_| crate::core::compatibility::managed_mod_root(&g.dir, Some(&g.exe_path)))
+                            .map(|_| crate::core::compatibility::deployment_mod_root(&g.dir, &g.exe_path))
                             .and_then(|root| crate::core::sm86_fg::installed_multiplier(&root));
                         mfg_multiplier.set(sm86_ceiling.unwrap_or(4));
                     }

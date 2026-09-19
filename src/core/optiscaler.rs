@@ -1096,8 +1096,7 @@ fn deploy_with_framegen(
     if (backend == FrameGenBackend::RtxMfg && route != crate::core::install_routes::InstallRoute::OptiScaler)
         || (backend == FrameGenBackend::RenoDxAda && route == crate::core::install_routes::InstallRoute::OptiScaler)
     { return Err("Frame Generation backend does not match the rendering route".into()); }
-    let mod_root = crate::core::compatibility::managed_mod_root(&opts.game_dir, Some(&opts.exe_path))
-        .unwrap_or_else(|| opts.exe_path.parent().unwrap_or(&opts.game_dir).to_path_buf());
+    let mod_root = crate::core::compatibility::deployment_mod_root(&opts.game_dir, &opts.exe_path);
     crate::core::install_guards::assert_game_closed(&opts.game_dir, Some(&opts.exe_path))?;
     let mut previous_ada_addon = None;
     // Explicit backends use exactly the UI's policy, re-evaluated on a fresh
@@ -1314,8 +1313,7 @@ fn remove_managed_sm86(game_dir: &Path) -> Result<(), String> {
 /// STRICTLY ZERO ReShade or add-on files are copied or referenced in this route.
 fn deploy_optiscaler_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
     let mut log = Vec::new();
-    let mod_root = crate::core::compatibility::managed_mod_root(&opts.game_dir, Some(&opts.exe_path))
-        .unwrap_or_else(|| opts.exe_path.parent().unwrap_or(&opts.game_dir).to_path_buf());
+    let mod_root = crate::core::compatibility::deployment_mod_root(&opts.game_dir, &opts.exe_path);
 
     log.push(format!("[ROUTING] Target installation directory: {}", mod_root.display()));
 
@@ -1513,8 +1511,7 @@ pub fn deploy_optiscaler(opts: &DeployOptions) -> Result<DeployResult, String> {
 /// STRICTLY ZERO OptiScaler files are deployed in this route.
 fn deploy_native_dlss5_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
     let mut log = Vec::new();
-    let mod_root = crate::core::compatibility::managed_mod_root(&opts.game_dir, Some(&opts.exe_path))
-        .unwrap_or_else(|| opts.exe_path.parent().unwrap_or(&opts.game_dir).to_path_buf());
+    let mod_root = crate::core::compatibility::deployment_mod_root(&opts.game_dir, &opts.exe_path);
 
     log.push(format!("[ROUTING] Native DLSS (RenoDX) target mod directory: {}", mod_root.display()));
 
@@ -1912,8 +1909,7 @@ pub fn configure_host64_reshade_ini(nr_style: usize) -> String {
 /// STRICTLY ZERO Pre-SR, ZERO MFG, ZERO OptiScaler files are deployed in this route.
 fn deploy_feeder_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result<DeployResult, String> {
     let mut log = Vec::new();
-    let mod_root = crate::core::compatibility::managed_mod_root(&opts.game_dir, Some(&opts.exe_path))
-        .unwrap_or_else(|| opts.exe_path.parent().unwrap_or(&opts.game_dir).to_path_buf());
+    let mod_root = crate::core::compatibility::deployment_mod_root(&opts.game_dir, &opts.exe_path);
 
     log.push(format!("[ROUTING] DLSS5-Feeder target mod directory: {}", mod_root.display()));
 
