@@ -32,7 +32,7 @@ experimental settings are not added or exposed by Studio.
 
 ## Payload and ownership
 
-Pinned upstream: [dlssg_for_sm86 0.3.3, commit 5e79459](https://github.com/sdli1995/dlssg_for_sm86/tree/5e79459c2d521f8c3276ce9ee02342c0e2686982).
+Pinned upstream: [dlssg_for_sm86 0.3.4, commit 196fcb6](https://github.com/sdli1995/dlssg_for_sm86/tree/196fcb61ef414992a6bef2d237ff609aab09f0d9).
 The 310.9 builds are individually hashed in `src/core/sm86_fg.rs`:
 
 - `version.dll`
@@ -56,6 +56,20 @@ tree or executable. Downloading from upstream is not a determination that
 redistribution rights have been granted. Any packaging or redistribution of
 the runtime still requires review of the upstream and NVIDIA terms. Upstream
 third-party notices are retained verbatim in the cache and the game directory.
+
+### Updating from Studio 1.0.5 / SM86 0.3.3
+
+Studio 1.0.6 retains the exact filename-specific 0.3.3 hashes for ownership,
+upgrade, rollback, and removal. Reinstall with SM86 enabled to replace all four
+proxies with the pinned 0.3.4 builds; no manual DLL deletion is required. New
+payload verification accepts only 0.3.4. A failed upgrade recovers the previous
+0.3.3 files and configuration from its checkpoint. As with reinstalling 0.3.4,
+foreign or externally modified files block the operation.
+
+The 1.0.6 game sheet reflects deployed renderer settings and reads SM86's
+configured 2x/3x/4x ceiling. Renderer route advisories and **Force Override**
+remain available, but cannot bypass SM86 GPU/API/native-FG eligibility, payload
+integrity, proxy ownership, or recovery guards.
 
 ## Rendering and restore
 
@@ -115,11 +129,13 @@ New tests cover GPU classification, API/bitness/native-FG gating, Ada routing,
 multiplier translation, INI preservation, foreign proxy rejection, old-manifest
 compatibility, repeated and failed manifest saves, interrupted-switch recovery,
 restore, and backup continuity.
-The final command downloads and verifies the four pinned DLLs (about 120 MB),
+The final command downloads and verifies both pinned proxy sets (about 240 MB),
 then exercises install, reinstall, rendering/backend switches, and restoration
 in a synthetic game directory. It also injects late reinstall/route-switch
 failures and compares every previous file and the manifest after rollback,
 and verifies that a proxy in the wrong filename slot is rejected by scanning.
+It also upgrades an actual 0.3.3 proxy set and verifies that a partially failed
+version upgrade restores all four old DLL hashes, its INI, and its manifest.
 The DLLs are copied as data, never loaded or
 executed. Windows CI runs this separately from the offline unit tests.
 

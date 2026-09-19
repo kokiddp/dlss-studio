@@ -22,7 +22,7 @@ pub mod single_instance;
 pub mod downloader;
 pub mod vulkan_layer;
 pub mod overlay_preview_window;
- 
+
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(test)]
@@ -31,7 +31,7 @@ mod tests {
 
     #[test]
     fn test_app_version_matches_package() {
-        assert_eq!(APP_VERSION, "1.0.5");
+        assert_eq!(APP_VERSION, "1.0.6");
         assert!(!APP_VERSION.is_empty());
     }
 }
