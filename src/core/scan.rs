@@ -2560,7 +2560,7 @@ mod tests {
 
         // Write sibling d3d_rmdutggamepass_f.dll with D3D12CreateDevice marker
         let mut d3d_dll = vec![0u8; 4096];
-        d3d_dll[100..117].copy_from_slice(b"D3D12CreateDevice\0");
+        d3d_dll[100..118].copy_from_slice(b"D3D12CreateDevice\0");
         fs::write(temp_dir.join("d3d_rmdutggamepass_f.dll"), &d3d_dll).unwrap();
 
         // Write dummy DLSS dll
