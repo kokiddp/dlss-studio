@@ -592,6 +592,7 @@ pub struct DeployOptions {
     pub mfg_unlock: bool,
     pub mfg_multiplier: u32,
     pub nr_style: usize,
+    pub nr_style_enabled: bool,
 }
 
 impl Default for DeployOptions {
@@ -608,6 +609,7 @@ impl Default for DeployOptions {
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         }
     }
 }
@@ -994,7 +996,7 @@ fn track_and_copy(
                 old_hash: None,
                 kind: Some(kind.to_string()),
             });
-            log.push(format!("[BACKUP] Saved existing {} to backup", rel));
+            log.push(format!("@{{log_backup_saved|{}}}", rel));
         }
     } else {
         if !manifest.added.contains(&rel) && !manifest.replaced.iter().any(|r| r.rel == rel) {
@@ -1005,7 +1007,7 @@ fn track_and_copy(
     // Write-ahead journal: even a failed or interrupted copy is recoverable.
     save_manifest(game_dir, manifest)?;
     fs::copy(src, dest)?;
-    log.push(format!("[COPY] Deployed {}", rel));
+    log.push(format!("@{{log_copy_deployed|{}}}", rel));
     Ok(())
 }
 
@@ -1048,7 +1050,7 @@ fn track_and_write(
                 old_hash: None,
                 kind: Some(kind.to_string()),
             });
-            log.push(format!("[BACKUP] Saved existing {} to backup", rel));
+            log.push(format!("@{{log_backup_saved|{}}}", rel));
         }
     } else {
         if !manifest.added.contains(&rel) && !manifest.replaced.iter().any(|r| r.rel == rel) {
@@ -1058,7 +1060,7 @@ fn track_and_write(
 
     save_manifest(game_dir, manifest)?;
     fs::write(dest, content)?;
-    log.push(format!("[WRITE] Configured {}", rel));
+    log.push(format!("@{{log_write_configured|{}}}", rel));
     Ok(())
 }
 
@@ -1358,6 +1360,12 @@ fn deploy_optiscaler_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Re
         replaced: Vec::new(),
         added: Vec::new(),
         added_dirs: Vec::new(),
+        mfg_unlock: Some(opts.mfg_unlock),
+        mfg_multiplier: Some(opts.mfg_multiplier),
+        nr_style_enabled: Some(opts.nr_style_enabled),
+        nr_style: Some(opts.nr_style),
+        opti_presr: Some(opts.pre_sr),
+        opti_passes: Some(opts.passes),
     };
 
     carry_forward_existing_backups(&opts.game_dir, &backup_dir, &mut manifest, &mut log)
@@ -1548,6 +1556,12 @@ fn deploy_native_dlss5_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> 
         replaced: Vec::new(),
         added: Vec::new(),
         added_dirs: Vec::new(),
+        mfg_unlock: Some(opts.mfg_unlock),
+        mfg_multiplier: Some(opts.mfg_multiplier),
+        nr_style_enabled: Some(opts.nr_style_enabled),
+        nr_style: Some(opts.nr_style),
+        opti_presr: Some(opts.pre_sr),
+        opti_passes: Some(opts.passes),
     };
 
     carry_forward_existing_backups(&opts.game_dir, &backup_dir, &mut manifest, &mut log)
@@ -1948,6 +1962,12 @@ fn deploy_feeder_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result
         replaced: Vec::new(),
         added: Vec::new(),
         added_dirs: Vec::new(),
+        mfg_unlock: Some(opts.mfg_unlock),
+        mfg_multiplier: Some(opts.mfg_multiplier),
+        nr_style_enabled: Some(opts.nr_style_enabled),
+        nr_style: Some(opts.nr_style),
+        opti_presr: Some(opts.pre_sr),
+        opti_passes: Some(opts.passes),
     };
 
     carry_forward_existing_backups(&opts.game_dir, &backup_dir, &mut manifest, &mut log)
@@ -1992,7 +2012,7 @@ fn deploy_feeder_inner(opts: &DeployOptions, payloads: &PayloadBundle) -> Result
     if has_vulkan_target {
         let vk_dir = payloads.feeder_components.as_ref().and_then(|fc| fc.vk_layer_dir.as_deref());
         match crate::core::vulkan_layer::register_vulkan_layer(&opts.game_dir, vk_dir, payloads.reshade64_dll.as_deref()) {
-            Ok(reg_p) => log.push(format!("[VULKAN] Registered Vulkan implicit layer ({})", reg_p.display())),
+            Ok(reg_p) => log.push(format!("@{{log_vulkan_registered|{}}}", reg_p.display())),
             Err(e) => log.push(format!("[WARN] Vulkan layer registration: {}", e)),
         }
     }
@@ -2851,6 +2871,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_optiscaler(&opts).expect("deploy should succeed");
@@ -2964,6 +2985,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         // 1. Deploy with custom addon registered and enabled
@@ -3046,6 +3068,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         // 1. Deploy Native DLSS 5
@@ -3124,6 +3147,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_native_dlss5(&opts).expect("deploy should succeed");
@@ -3180,6 +3204,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_native_dlss5(&opts).expect("deploy_native_dlss5 should succeed");
@@ -3259,6 +3284,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_native_dlss5(&opts).expect("deploy should succeed");
@@ -3406,6 +3432,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_optiscaler_with_bundle(&opts, &payloads).expect("deploy_optiscaler_with_bundle must succeed");
@@ -3459,6 +3486,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_optiscaler_with_bundle(&opts, &payloads).expect("deploy must succeed");
@@ -3502,6 +3530,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_optiscaler_with_bundle(&opts, &payloads).expect("deploy must succeed");
@@ -3575,6 +3604,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_native_dlss5_with_bundle(&opts, &payloads).expect("deploy_native_dlss5_with_bundle must succeed");
@@ -3620,6 +3650,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_native_dlss5_with_bundle(&opts, &payloads).expect("deploy must succeed");
@@ -3654,6 +3685,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle must succeed");
@@ -3702,6 +3734,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle must succeed");
@@ -3752,6 +3785,7 @@ dgVoodooWatermark = false
             mfg_unlock: true, // User requested MFG in UI or options
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle must succeed for DX11");
@@ -3807,6 +3841,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle must succeed");
@@ -3851,6 +3886,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         // Deploy Route 1
@@ -3897,6 +3933,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
         deploy_optiscaler_with_bundle(&opti_opts, &payloads).unwrap();
         assert!(game_dir.join("OptiScaler.ini").exists());
@@ -3919,6 +3956,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
         deploy_native_dlss5_with_bundle(&reshade_opts, &payloads).unwrap();
 
@@ -3955,6 +3993,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_optiscaler_with_bundle(&opts, &payloads);
@@ -4083,6 +4122,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         // 1. Deploy Feeder route
@@ -4140,6 +4180,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         // Deploy Feeder route for OpenGL game
@@ -4189,6 +4230,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res1 = deploy_feeder_with_bundle(&feeder_opts, &payloads).expect("deploy feeder must succeed");
@@ -4214,6 +4256,7 @@ dgVoodooWatermark = false
             mfg_unlock: true,
             mfg_multiplier: 4,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res2 = deploy_optiscaler_with_bundle(&opti_opts, &payloads).expect("deploy optiscaler must succeed");
@@ -4288,6 +4331,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         // Deploy Feeder: replaces genuine dxgi.dll with ReShade
@@ -4307,6 +4351,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
         deploy_optiscaler_with_bundle(&opti_opts, &payloads).unwrap();
 
@@ -4323,6 +4368,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
         deploy_native_dlss5_with_bundle(&native_opts, &payloads).unwrap();
 
@@ -4373,6 +4419,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle for 32-bit must succeed");
@@ -4419,6 +4466,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle for 32-bit with dgVoodoo must succeed");
@@ -4505,6 +4553,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle for D3D8 must succeed");
@@ -4568,6 +4617,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
 
         let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle for 64-bit must succeed");
@@ -4617,6 +4667,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 2,
+            nr_style_enabled: true,
         };
         let res_native = deploy_native_dlss5_with_bundle(&native_opts, &payloads).expect("Native deploy must succeed");
         assert!(res_native.success);
@@ -4627,6 +4678,7 @@ dgVoodooWatermark = false
         // 2. Verify scan_game_directory reads back nr_style = 2
         let scanned = crate::core::scan::scan_game_directory(&game_dir).expect("Scan must find deployed game");
         assert_eq!(scanned.nr_style, 2, "Scanner must detect nr_style = 2 from ReShade.ini");
+        assert!(scanned.nr_style_enabled, "Scanner must detect nr_style_enabled = true");
 
         // 3. Deploy Feeder Route with nr_style = 1 (Natural)
         let feeder_opts = DeployOptions {
@@ -4641,6 +4693,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 1,
+            nr_style_enabled: true,
         };
         let res_feeder = deploy_feeder_with_bundle(&feeder_opts, &payloads).expect("Feeder deploy must succeed");
         assert!(res_feeder.success);
@@ -4661,6 +4714,7 @@ dgVoodooWatermark = false
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 2,
+            nr_style_enabled: true,
         };
         let res_opti = deploy_optiscaler_with_bundle(&opti_opts, &payloads).expect("OptiScaler deploy must succeed");
         assert!(res_opti.success);

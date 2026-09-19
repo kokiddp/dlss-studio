@@ -49,6 +49,7 @@ fn main() {
             mfg_unlock: false,
             mfg_multiplier: 1,
             nr_style: 0,
+            nr_style_enabled: false,
         };
         match core::optiscaler::deploy_optiscaler(&opts) {
             Ok(res) => {
@@ -184,6 +185,7 @@ fn main() {
                 mfg_unlock: true,
                 mfg_multiplier: 4,
                 nr_style: 0,
+                nr_style_enabled: false,
             };
             // The headless route must acquire the same verified SM86 payload
             // as the UI; selecting the backend alone only works with a warm cache.
