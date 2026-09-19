@@ -10,7 +10,7 @@ const BRAND_BADGE_WEBP: &[u8] = include_bytes!("../../assets/brand-badge.webp");
 
 use crate::core::journal::{restore_game, read_history, append_history, HistoryRow};
 use crate::core::install_guards::assert_game_closed;
-use crate::core::compatibility::managed_mod_root;
+use crate::core::compatibility::deployment_mod_root;
 use crate::core::state::{load_state, save_state, touch, ago, get_state_path, log_message, get_session_log};
 use std::fs;
 
@@ -3316,7 +3316,7 @@ pub fn App() -> Element {
                                                                         return;
                                                                     }
 
-                                                                    let mod_root = managed_mod_root(&game_dir, Some(&exe_path)).unwrap_or_else(|| game_dir.clone());
+                                                                    let mod_root = deployment_mod_root(&game_dir, &exe_path);
                                                                     lines.push(format!("[ROUTING] Target mod directory: {}", mod_root.display()));
                                                                     job_lines.set(lines.clone());
 
