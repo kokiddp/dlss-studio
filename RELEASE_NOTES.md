@@ -3,8 +3,9 @@
 ### RTX 30 fork integration
 
 - Integrates upstream Studio 1.0.7 while retaining the fork's experimental RTX 30 backend and deployment/recovery protections.
-- Updates DLSSG SM86 to pinned 0.3.4 (`196fcb61ef414992a6bef2d237ff609aab09f0d9`) with individually verified forwarding DLLs and notices. Upstream 0.3.4 fixes an RTX 30 driver-reset issue involving NVIDIA App DLSS overrides / NGX model updates.
-- Recognizes managed 0.3.3 DLLs for in-place upgrade, rollback, and removal; new payloads must match 0.3.4. Failed upgrades recover the old installation.
+- Updates DLSSG SM86 to pinned 0.3.5 (`9621db573e07ed54f50c15bbb585ed9a7bdfac28`) with individually verified forwarding DLLs and notices. Upstream 0.3.5 fixes a defect present since 0.3.0 where re-creating the frame-generation feature (menu/resolution/quality changes, toggling frame generation) could use the wrong optimized inference kernel, causing corrupted generated frames or random crashes/driver resets.
+- Recognizes managed 0.3.4 DLLs for in-place upgrade, rollback, and removal; new payloads must match 0.3.5. Failed upgrades recover the old installation.
+- Adds 5x and 6x ceiling options to the SM86 multiplier selector, matching the 0.3.5 runtime's raised cap (`MaxGeneratedFrames` up to 5). The Ada/RTX 40 MFG-unlock route is unaffected and remains capped at 4x.
 - Restores the installed SM86 multiplier in the game sheet. Renderer **Force Override** does not bypass GPU/API/native-FG, integrity, ownership, or recovery checks.
 - RTX 30 support remains experimental; see [setup and validation](docs/RTX30-SM86.md).
 

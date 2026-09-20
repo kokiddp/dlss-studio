@@ -2953,7 +2953,7 @@ pub fn App() -> Element {
                         let fg_capability = crate::core::framegen::framegen_capability(&target_game, &primary_gpu, fg_route);
                         let show_mfg = fg_capability.reason.is_none();
                         let is_sm86 = fg_capability.backend == crate::core::framegen::FrameGenBackend::DlssgSm86;
-                        if is_sm86 && !(2..=4).contains(&*mfg_multiplier.read()) { mfg_multiplier.set(4); }
+                        if is_sm86 && !(2..=6).contains(&*mfg_multiplier.read()) { mfg_multiplier.set(4); }
                         if !show_mfg && *mfg_choice.read() {
                             mfg_choice.set(false);
                         }
@@ -3470,6 +3470,10 @@ pub fn App() -> Element {
                                                                 option { value: "2", "2x" }
                                                                 option { value: "3", "3x" }
                                                                 option { value: "4", "{crate::core::i18n::t(&current_lang.read(), \"mfg_multiplier_default\")}" }
+                                                                if is_sm86 {
+                                                                    option { value: "5", "5x" }
+                                                                    option { value: "6", "6x" }
+                                                                }
                                                             }
                                                         }
                                                     }

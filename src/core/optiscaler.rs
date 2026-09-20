@@ -2651,8 +2651,8 @@ mod tests {
         assert_eq!(fs::read(bin.join("dxgi.dll")).unwrap(), originals[1].1.as_bytes());
         fs::remove_file(bin.join("dbghelp.dll")).unwrap();
 
-        // Upgrade a real 0.3.3 installation. Legacy hashes remain recognized
-        // for ownership/recovery, but cannot be supplied as a new payload.
+        // Upgrade a real legacy-pinned installation. Legacy hashes remain
+        // recognized for ownership/recovery, but cannot be supplied as a new payload.
         deploy_native_dlss5_with_bundle(&opts, &payloads).unwrap();
         let legacy = root.join("legacy-payload");
         for (name, source, hash) in sm86_fg::LEGACY_PROXIES {

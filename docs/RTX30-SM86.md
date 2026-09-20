@@ -14,7 +14,8 @@ hardware by the implementation author. Existing RTX 40 routes remain available.
    `sl.dlss.dll` is Super Resolution, not Frame Generation. Files introduced by
    Studio's manifest do not qualify as native DLSS-G support.
 4. Enable **Frame Generation — DLSSG SM86 (experimental, RTX 30)** in the game
-   sheet. The feature is opt-in. Choose a 2x, 3x, or 4x ceiling.
+   sheet. The feature is opt-in. Choose a 2x, 3x, 4x, 5x, or 6x ceiling (5x/6x
+   require the 0.3.5+ runtime).
 5. Install while the game is closed. Studio downloads the pinned external
    runtime and notices from upstream, verifies SHA-256, then deploys it.
 6. Start the game and enable DLSS Frame Generation in its own settings. The
@@ -25,6 +26,8 @@ hardware by the implementation author. Existing RTX 40 routes remain available.
 | 2x | 1 |
 | 3x | 2 |
 | 4x | 3 |
+| 5x | 4 |
+| 6x | 5 |
 
 Optimized mode is `1`, the compatibility preset is `Auto`, logging level is `1`,
 and the runtime mode is `Bundled`. Unrelated INI sections are retained. Advanced
@@ -32,7 +35,7 @@ experimental settings are not added or exposed by Studio.
 
 ## Payload and ownership
 
-Pinned upstream: [dlssg_for_sm86 0.3.4, commit 196fcb6](https://github.com/sdli1995/dlssg_for_sm86/tree/196fcb61ef414992a6bef2d237ff609aab09f0d9).
+Pinned upstream: [dlssg_for_sm86 0.3.5, commit 9621db5](https://github.com/sdli1995/dlssg_for_sm86/tree/9621db573e07ed54f50c15bbb585ed9a7bdfac28).
 The 310.9 builds are individually hashed in `src/core/sm86_fg.rs`:
 
 - `version.dll`
@@ -57,17 +60,17 @@ redistribution rights have been granted. Any packaging or redistribution of
 the runtime still requires review of the upstream and NVIDIA terms. Upstream
 third-party notices are retained verbatim in the cache and the game directory.
 
-### Updating from Studio 1.0.5 / SM86 0.3.3
+### Updating from SM86 0.3.4
 
-Studio 1.0.6 retains the exact filename-specific 0.3.3 hashes for ownership,
+Studio retains the exact filename-specific 0.3.4 hashes for ownership,
 upgrade, rollback, and removal. Reinstall with SM86 enabled to replace all four
-proxies with the pinned 0.3.4 builds; no manual DLL deletion is required. New
-payload verification accepts only 0.3.4. A failed upgrade recovers the previous
-0.3.3 files and configuration from its checkpoint. As with reinstalling 0.3.4,
+proxies with the pinned 0.3.5 builds; no manual DLL deletion is required. New
+payload verification accepts only 0.3.5. A failed upgrade recovers the previous
+0.3.4 files and configuration from its checkpoint. As with reinstalling 0.3.5,
 foreign or externally modified files block the operation.
 
-The 1.0.6 game sheet reflects deployed renderer settings and reads SM86's
-configured 2x/3x/4x ceiling. Renderer route advisories and **Force Override**
+The game sheet reflects deployed renderer settings and reads SM86's
+configured 2x–6x ceiling. Renderer route advisories and **Force Override**
 remain available, but cannot bypass SM86 GPU/API/native-FG eligibility, payload
 integrity, proxy ownership, or recovery guards.
 
@@ -134,14 +137,14 @@ then exercises install, reinstall, rendering/backend switches, and restoration
 in a synthetic game directory. It also injects late reinstall/route-switch
 failures and compares every previous file and the manifest after rollback,
 and verifies that a proxy in the wrong filename slot is rejected by scanning.
-It also upgrades an actual 0.3.3 proxy set and verifies that a partially failed
-version upgrade restores all four old DLL hashes, its INI, and its manifest.
+It also upgrades an actual legacy-pinned proxy set and verifies that a
+partially failed version upgrade restores all four old DLL hashes, its INI, and its manifest.
 The DLLs are copied as data, never loaded or
 executed. Windows CI runs this separately from the offline unit tests.
 
 Before calling the feature production-ready, test Cyberpunk 2077, Black Myth:
 Wukong, and Final Fantasy VII Rebirth on physical RTX 30 hardware. For each
-rendering route, check 2x/3x/4x requests, logs showing one active proxy, game
+rendering route, check 2x–6x requests, logs showing one active proxy, game
 restarts, repeat installation, disabling FG, route changes, restore, and a
 deliberately occupied proxy slot. Compare original-file hashes after restore.
 Also repeat existing RTX 40 workflows to verify behavior has not regressed.

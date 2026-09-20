@@ -6,8 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const RELEASE_VERSION: &str = "0.3.4";
-pub const RELEASE_COMMIT: &str = "196fcb61ef414992a6bef2d237ff609aab09f0d9";
+pub const RELEASE_VERSION: &str = "0.3.5";
+pub const RELEASE_COMMIT: &str = "9621db573e07ed54f50c15bbb585ed9a7bdfac28";
 pub const INI_NAME: &str = "dlssg_sm86.ini";
 pub const NOTICE_NAME: &str = "dlssg_sm86_THIRD_PARTY_NOTICES.txt";
 
@@ -17,32 +17,32 @@ pub const PROXIES: [(&str, &str, &str); 4] = [
     (
         "version.dll",
         "version.dll",
-        "575c9bb475c836cef3c40d7195656955e14220aa9f0f7dde9d817a91911cb85f",
+        "c3934a09399f022504227c72df0bf8c0de55f9a08880dddde898c5262cefa838",
     ),
     (
         "winmm.dll",
         "alternatives/winmm.dll",
-        "84bfa1c4a68711439a92400cce5f80ce0ba3378caefb17b85e388a0fb60bc53c",
+        "bc3cef25c1ccbbdccdd93db9fae845104bb6c71fd433240e26641881a7e46658",
     ),
     (
         "dbghelp.dll",
         "alternatives/dbghelp.dll",
-        "50e1c50cb45a5512bcead3ea22da560776db67f7ab8f7fe9c583b4ecee7b7a41",
+        "dfe7f44baa68d237dfe040d4b4cfc9bd44b01e661f3051996db1144e6bb388cb",
     ),
     (
         "dinput8.dll",
         "alternatives/dinput8.dll",
-        "ccc0fc43f9ac1a622f37c71ea480dd75641cb6426af8023ed344a89189af5c8c",
+        "4fbad08bb9360a1cd1309a82586353484fe64b7220199344ab83fae308176c6b",
     ),
 ];
-// Recognition only: keep 0.3.3 installations owned across an upgrade so they
-// can be replaced, rolled back, or restored. New deployments verify only 0.3.4.
-pub const LEGACY_RELEASE_COMMIT: &str = "5e79459c2d521f8c3276ce9ee02342c0e2686982";
+// Recognition only: keep 0.3.4 installations owned across an upgrade so they
+// can be replaced, rolled back, or restored. New deployments verify only 0.3.5.
+pub const LEGACY_RELEASE_COMMIT: &str = "196fcb61ef414992a6bef2d237ff609aab09f0d9";
 pub const LEGACY_PROXIES: [(&str, &str, &str); 4] = [
-    ("version.dll", "version.dll", "3b9ee60894766f2ea810f7aae171b163b923cff7ead71ef7d4eda624470c4642"),
-    ("winmm.dll", "alternatives/winmm.dll", "ed8d901000eb509c4d552bfbe0f66f2ee78c65226f703df9d8bf4b1bdb2726cd"),
-    ("dbghelp.dll", "alternatives/dbghelp.dll", "880e00cfd631cbd65e4d6490bfd25b894a5b6f40ba460b59b725edbc6e219e5d"),
-    ("dinput8.dll", "alternatives/dinput8.dll", "46742058b45e851d4b371fb84fa160ef3eff9677d50b839ec5aa28adf868abab"),
+    ("version.dll", "version.dll", "575c9bb475c836cef3c40d7195656955e14220aa9f0f7dde9d817a91911cb85f"),
+    ("winmm.dll", "alternatives/winmm.dll", "84bfa1c4a68711439a92400cce5f80ce0ba3378caefb17b85e388a0fb60bc53c"),
+    ("dbghelp.dll", "alternatives/dbghelp.dll", "50e1c50cb45a5512bcead3ea22da560776db67f7ab8f7fe9c583b4ecee7b7a41"),
+    ("dinput8.dll", "alternatives/dinput8.dll", "ccc0fc43f9ac1a622f37c71ea480dd75641cb6426af8023ed344a89189af5c8c"),
 ];
 const NOTICE_HASH: &str = "ac3b44ab30a4235edd18feca1ab4f802d57c8d3d0ee4878dc77b81a6b127155f";
 
@@ -109,8 +109,8 @@ pub async fn ensure_payload(log: &mut Vec<String>) -> Result<Sm86Payload, String
 }
 
 pub fn configure_ini(base: &str, multiplier: u32) -> Result<String, String> {
-    if !(2..=4).contains(&multiplier) {
-        return Err("SM86 multiplier ceiling must be 2x, 3x or 4x".into());
+    if !(2..=6).contains(&multiplier) {
+        return Err("SM86 multiplier ceiling must be 2x, 3x, 4x, 5x or 6x".into());
     }
     let values = [
         ("General", "Enabled", "1"),
@@ -170,7 +170,7 @@ pub fn installed_multiplier(mod_root: &Path) -> Option<u32> {
     let text = fs::read_to_string(mod_root.join(INI_NAME)).ok()?;
     let generated = crate::core::optiscaler::get_ini(&text, "FrameGeneration", "MaxGeneratedFrames")?
         .parse::<u32>().ok()?;
-    (1..=3).contains(&generated).then_some(generated.saturating_add(1))
+    (1..=5).contains(&generated).then_some(generated.saturating_add(1))
 }
 
 /// Default deployment requires the complete coordinating tool-proxy set.
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn multiplier_ceiling_and_unrelated_settings() {
-        for multiplier in 2..=4 {
+        for multiplier in 2..=6 {
             let ini = configure_ini("; keep me\n[Unrelated]\nKey=value\n", multiplier).unwrap();
             assert_eq!(
                 get_ini(&ini, "FrameGeneration", "MaxGeneratedFrames"),
@@ -246,7 +246,7 @@ mod tests {
             assert!(!ini.contains("ForcePluginFrames"));
             assert!(!ini.contains("ForceGeneratedFrames"));
         }
-        for invalid in [0, 1, 5, 6, u32::MAX] {
+        for invalid in [0, 1, 7, u32::MAX] {
             assert!(configure_ini("", invalid).is_err());
         }
     }
@@ -343,7 +343,7 @@ mod tests {
             }
             let expected = if layout == "mod-organizer" { &root } else { &exe_dir };
             assert_eq!(deployment_mod_root(&game_dir, &exe_dir.join("game.exe")), *expected);
-            for ceiling in 2..=4 {
+            for ceiling in 2..=6 {
                 // A stale INI in the game root must not override the actual deployment.
                 fs::write(game_dir.join(INI_NAME), configure_ini("", 4).unwrap()).unwrap();
                 fs::write(expected.join(INI_NAME), configure_ini("", ceiling).unwrap()).unwrap();
@@ -358,11 +358,11 @@ mod tests {
     fn reads_installed_sm86_ceiling_without_leaking_an_invalid_value() {
         let dir = std::env::temp_dir().join(format!("sm86-ceiling-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        for ceiling in 2..=4 {
+        for ceiling in 2..=6 {
             fs::write(dir.join(INI_NAME), configure_ini("", ceiling).unwrap()).unwrap();
             assert_eq!(installed_multiplier(&dir), Some(ceiling));
         }
-        fs::write(dir.join(INI_NAME), "[FrameGeneration]\nMaxGeneratedFrames=5\n").unwrap();
+        fs::write(dir.join(INI_NAME), "[FrameGeneration]\nMaxGeneratedFrames=6\n").unwrap();
         assert_eq!(installed_multiplier(&dir), None);
         fs::remove_dir_all(dir).unwrap();
     }
