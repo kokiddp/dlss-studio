@@ -243,7 +243,7 @@ pub fn is_installer_or_helper(name: &str) -> bool {
         || lower.contains("checker") || lower.contains("subprocess") || lower.contains("cefsharp")
         || lower.contains("browser") || lower.contains("crashmailer") || lower.contains("crashsender")
         || lower.contains("crash_report") || lower.contains("bugreport") || lower.contains("errorreport")
-        || lower.contains("diagnostics") || lower.contains("benchmark")
+        || lower.contains("diagnostics")
         || lower.contains("prelauncher")
         || lower.contains("launcher")
         || lower.ends_with("config.exe") || lower.ends_with("_config.exe") || lower.ends_with("-config.exe") || lower == "config.exe" || lower.contains("configuration")
@@ -448,6 +448,7 @@ fn is_middleware_dll(fname: &str) -> bool {
         || n_lower.starts_with("party") || n_lower.starts_with("playfab") || n_lower.starts_with("libhttpclient")
         || n_lower.starts_with("crash") || n_lower.starts_with("breakpad") || n_lower.starts_with("sentry")
         || n_lower.starts_with("bugsplat") || n_lower.starts_with("cef") || n_lower.starts_with("libcef")
+        || n_lower.starts_with("libegl") || n_lower.starts_with("libglesv2")
         || n_lower.starts_with("ffmpeg") || n_lower.starts_with("avcodec") || n_lower.starts_with("avformat")
         || n_lower.starts_with("qt5") || n_lower.starts_with("qt6") || n_lower.starts_with("chrome_elf")
         || n_lower.starts_with("openimage") || n_lower.starts_with("tbb") || n_lower.starts_with("xcurl")
@@ -582,6 +583,15 @@ pub fn detect_api(path: &Path, imports: &[String]) -> Option<String> {
     if fname.contains("vulkan") {
         return Some("Vulkan".to_string());
     }
+    // An exe explicitly named for a specific legacy API (e.g. Sims 4's TS4_DX9_x64.exe,
+    // shipped alongside the modern TS4_x64.exe as a compatibility fallback) must be trusted
+    // outright, the same way dx11/dx12/vulkan filenames already are above: such a binary
+    // commonly still contains higher-tier marker strings from shared engine code it never
+    // actually exercises, which would otherwise make the marker-corroboration fallback below
+    // misreport it as the higher API.
+    if fname.contains("dx9") || fname.contains("d3d9") {
+        return Some("DirectX 9".to_string());
+    }
 
     if let Some(parent) = path.parent() {
         if let Some(api) = detect_renpy_api(parent) {
@@ -603,10 +613,26 @@ pub fn detect_api(path: &Path, imports: &[String]) -> Option<String> {
         return Some("OpenGL".to_string());
     }
 
-    if let Some(api) = api_from_names(imports) {
-        return Some(api);
+    let names_api = api_from_names(imports);
+    // A static import of a legacy API (DX9/DX8/DX10/bare DXGI) is weak evidence: some engines
+    // link it in for an unrelated vestigial reason (e.g. Red Dead Redemption 2 statically
+    // imports d3d9.dll yet only renders via DX12/Vulkan, loaded through runtime LoadLibrary
+    // calls that leave no trace in any import table). Corroborate against marker evidence in
+    // that case; a strong-tier static import (DX11/DX12/Vulkan) is trusted unconditionally, so
+    // a coincidental marker string in an otherwise single-API binary can never override it.
+    let is_weak_legacy_import = matches!(
+        names_api.as_deref(),
+        Some("DirectX 9") | Some("DirectX 8") | Some("DirectX 10") | Some("DirectX (DXGI)")
+    );
+    if let Some(api) = &names_api {
+        if !is_weak_legacy_import {
+            return Some(api.clone());
+        }
     }
     if let Some(api) = api_from_markers(path) {
+        return Some(api);
+    }
+    if let Some(api) = names_api {
         return Some(api);
     }
     if imports.iter().any(|i| i == "opengl32.dll" || i.ends_with("\\opengl32.dll") || i.ends_with("/opengl32.dll")) {
@@ -846,6 +872,13 @@ fn candidate_score(c: &Candidate, dir_name: &str) -> i64 {
     if c.size < 1_000_000 && !c.declared && !c.has_sibling_dlss {
         score -= 5000;
     }
+    // "benchmark" in the name is common both for standalone GPU benchmark titles (the whole
+    // product, which must still be scannable) and for a companion tool bundled inside an
+    // unrelated real game's folder. Deprioritize rather than hard-exclude, so a real game exe
+    // in the same folder still wins, while a standalone benchmark remains the only candidate.
+    if c.name.to_lowercase().contains("benchmark") {
+        score -= 3000;
+    }
     // Boost executables matching the game folder name (e.g. BeingADIK.exe vs "Being a DIK")
     let norm_dir: String = dir_name.chars().filter(|ch| ch.is_alphanumeric()).flat_map(|ch| ch.to_lowercase()).collect();
     let norm_name: String = c.name.chars().filter(|ch| ch.is_alphanumeric()).flat_map(|ch| ch.to_lowercase()).collect();
@@ -1064,11 +1097,20 @@ pub fn infer_game_name(dir: &Path, exe_path: &Path, xbox_name: Option<String>) -
 /// which sits well beyond the main walk's max_depth(5). Probe that known plugin
 /// root separately so games with no copy next to the main exe (e.g. Hogwarts
 /// Legacy) still get recognized as Frame Generation-capable.
-fn scan_deep_vendor_fg(dir: &Path) -> Vec<(PathBuf, Option<String>)> {
+/// UE4/5 titles ship Nvidia Super Resolution and Frame Generation DLLs deep
+/// under Engine/Plugins/Runtime/Nvidia/**, well beyond the main walk's
+/// max_depth(5). Probe that known plugin root separately so games with no
+/// shallow copy next to the main exe are still recognized as DLSS/Frame
+/// Generation-capable (e.g. Hogwarts Legacy: a patch removed its
+/// Phoenix/Binaries/Win64 copies, leaving nvngx_dlss.dll only under
+/// Engine/Plugins/Runtime/Nvidia/DLSS/Binaries/ThirdParty/Win64).
+/// Returns the discovered files plus whether any of them is Frame Generation.
+fn scan_deep_vendor_dlss(dir: &Path) -> (Vec<(PathBuf, Option<String>)>, bool) {
     let mut found = Vec::new();
+    let mut has_fg = false;
     let runtime = dir.join("Engine").join("Plugins").join("Runtime");
     if !runtime.is_dir() {
-        return found;
+        return (found, has_fg);
     }
     for entry in WalkDir::new(&runtime)
         .max_depth(6)
@@ -1079,14 +1121,19 @@ fn scan_deep_vendor_fg(dir: &Path) -> Vec<(PathBuf, Option<String>)> {
             continue;
         }
         let file_name = entry.file_name().to_string_lossy().to_lowercase();
-        if file_name == "nvngx_dlssg.dll" || file_name == "sl.dlss_g.dll"
-            || file_name.contains("framegeneration_dx12") || file_name == "fgvk.dll"
-        {
+        let is_fg = file_name == "nvngx_dlssg.dll" || file_name == "sl.dlss_g.dll"
+            || file_name.contains("framegeneration_dx12") || file_name == "fgvk.dll";
+        let is_sr = file_name == "nvngx_dlss.dll" || file_name == "_nvngx.dll"
+            || file_name == "nvngx.dll" || file_name == "nvngx_dlssnr.dll";
+        if is_fg || is_sr {
+            if is_fg {
+                has_fg = true;
+            }
             let pe_opt = inspect_pe(entry.path());
             found.push((entry.path().to_path_buf(), pe_opt.and_then(|p| p.version)));
         }
     }
-    found
+    (found, has_fg)
 }
 
 pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
@@ -1115,7 +1162,7 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
         "__installer", "installer_resources", "installers", "installer", "support", "redist", "_redist", "commonredist", "_commonredist", "prerequisites",
         "cache", "caches", "shadercache", "soundbanks", "soundbank", "video", "videos", "datas", "fonts", "font",
         "renpy", "crashreporter", "crashreports", "tools", "tool", "compiler", "compilers", "easyanticheat", "battleye",
-        "launcher", "launchers"
+        "launcher", "launchers", "jre", "jdk"
     ];
 
     for entry in WalkDir::new(dir)
@@ -1239,12 +1286,10 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
         }
     }
 
-    if !has_fg {
-        let deep_fg = scan_deep_vendor_fg(dir);
-        if !deep_fg.is_empty() {
-            has_fg = true;
-            dlss_files.extend(deep_fg);
-        }
+    let (deep_dlss, deep_has_fg) = scan_deep_vendor_dlss(dir);
+    if !deep_dlss.is_empty() {
+        has_fg = has_fg || deep_has_fg;
+        dlss_files.extend(deep_dlss);
     }
 
     // Add manifest-declared executables that were not visited or had inspect_pe fail
@@ -1646,7 +1691,7 @@ pub fn discover_game_exes(dir: &Path) -> Vec<GameExeOption> {
         "__installer", "installer_resources", "installers", "installer", "support", "redist", "_redist", "commonredist", "_commonredist", "prerequisites",
         "cache", "caches", "shadercache", "soundbanks", "soundbank", "video", "videos", "datas", "fonts", "font",
         "renpy", "crashreporter", "crashreports", "tools", "tool", "compiler", "compilers", "easyanticheat", "battleye",
-        "launcher", "launchers"
+        "launcher", "launchers", "jre", "jdk"
     ];
 
     for entry in WalkDir::new(dir)
@@ -2573,6 +2618,27 @@ mod tests {
     }
 
     #[test]
+    fn test_dx9_named_exe_wins_over_higher_tier_markers_from_shared_engine_code() {
+        // Regression for The Sims 4's TS4_DX9_x64.exe: a dedicated legacy-API compatibility
+        // exe that imports nothing graphics-related directly (only an unrelated activation
+        // DLL) but whose binary, built from the same shared engine sources as the modern
+        // TS4_x64.exe, still contains a "D3D11CreateDevice" marker it never actually calls.
+        // Without the dx9 filename shortcut, marker corroboration would misreport it as DX11.
+        let temp = std::env::temp_dir().join(format!("test_dx9_filename_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&temp).unwrap();
+        let exe = temp.join("TS4_DX9_x64.exe");
+        fs::write(&exe, b"...D3D11CreateDevice...Direct3DCreate9...").unwrap();
+
+        assert_eq!(
+            detect_api(&exe, &["Core/Activation64.dll".to_string()]),
+            Some("DirectX 9".to_string()),
+            "A dx9-named exe must resolve to DirectX 9 even when its binary contains a higher-tier marker string"
+        );
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
     fn test_xbox_gdk_display_name_extraction() {
         let temp = std::env::temp_dir().join(format!("test_xbox_gdk_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir_all(&temp).unwrap();
@@ -2814,39 +2880,107 @@ mod tests {
     }
 
     #[test]
+    fn deep_vendor_scan_finds_super_resolution_without_a_shallow_copy() {
+        // Regression: a Hogwarts Legacy patch removed nvngx_dlss.dll from its shallow
+        // Phoenix/Binaries/Win64 folder, leaving it only under the deep
+        // Engine/Plugins/Runtime/Nvidia/DLSS/Binaries/ThirdParty/Win64 plugin path. The deep
+        // vendor scan already looked there for Frame Generation DLLs but not the Super
+        // Resolution one, silently losing DLSS detection whenever no shallow copy remains.
+        let dir = std::env::temp_dir().join(format!("test_deep_sr_{}", std::process::id()));
+        let deep_dlss_dir = dir.join("Engine").join("Plugins").join("Runtime").join("Nvidia").join("DLSS").join("Binaries").join("ThirdParty").join("Win64");
+        let deep_streamline_dir = dir.join("Engine").join("Plugins").join("Runtime").join("Nvidia").join("Streamline").join("Binaries").join("ThirdParty").join("Win64");
+        fs::create_dir_all(&deep_dlss_dir).unwrap();
+        fs::create_dir_all(&deep_streamline_dir).unwrap();
+
+        let exe = dir.join("Game-Win64-Shipping.exe");
+        fs::write(&exe, graphics_pe_fixture(b"D3D12CreateDevice\0")).unwrap();
+        fs::write(deep_dlss_dir.join("nvngx_dlss.dll"), b"fake dlss sr dll").unwrap();
+        fs::write(deep_streamline_dir.join("nvngx_dlssg.dll"), b"fake dlssg fg dll").unwrap();
+
+        let g = scan_game_directory(&dir).expect("must scan");
+        assert!(g.has_frame_generation, "Deep Frame Generation evidence must still be found");
+        assert!(
+            g.files.iter().any(|f| f.rel.replace('\\', "/").ends_with("DLSS/Binaries/ThirdParty/Win64/nvngx_dlss.dll")),
+            "Deep Super Resolution evidence must be found even with no shallow copy"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // The following two tests verify real-world detection against an actual local install,
+    // opted into via environment variable rather than a hardcoded path so no developer's
+    // machine-specific drive letters/folders end up committed to the repo. They silently
+    // skip when the variable isn't set, so they're inert for everyone but whoever sets it.
+
+    #[test]
     fn test_hogwarts_legacy_directx12_via_delay_import_real() {
-        let exe = Path::new(r"I:\Games\HogwartsLegacy\Phoenix\Binaries\Win64\HogwartsLegacy.exe");
+        let Ok(game_dir_str) = std::env::var("DLSS_STUDIO_TEST_HOGWARTS_LEGACY_DIR") else { return; };
+        let game_dir = PathBuf::from(game_dir_str);
+        if !game_dir.is_dir() {
+            return;
+        }
+
+        let exe = game_dir.join("Phoenix").join("Binaries").join("Win64").join("HogwartsLegacy.exe");
         if exe.is_file() {
-            let pe = inspect_pe(exe).expect("HogwartsLegacy.exe must parse as a valid PE");
+            let pe = inspect_pe(&exe).expect("HogwartsLegacy.exe must parse as a valid PE");
             assert!(
                 pe.imports.iter().any(|i| i == "d3d12.dll"),
                 "d3d12.dll must be visible via delay-load import parsing even though it isn't a static import"
             );
-            let api = detect_api(exe, &pe.imports).expect("HogwartsLegacy.exe must detect an API");
+            let api = detect_api(&exe, &pe.imports).expect("HogwartsLegacy.exe must detect an API");
             assert_eq!(api, "DirectX 12", "Hogwarts Legacy delay-loads d3d12.dll and must resolve to DirectX 12, not DirectX 11");
         }
 
-        let game_dir = Path::new(r"I:\Games\HogwartsLegacy");
-        if game_dir.is_dir() {
-            let game = scan_game_directory(game_dir).expect("Hogwarts Legacy must scan");
-            assert_eq!(game.api, "DirectX 12", "Hogwarts Legacy must resolve to DirectX 12");
-            assert!(
-                game.has_frame_generation,
-                "Hogwarts Legacy ships nvngx_dlssg.dll/sl.dlss_g.dll under Engine/Plugins/Runtime/Nvidia/Streamline, \
-                 which the deep vendor FG scan must find even though it's far beyond the main walk's max_depth(5)"
-            );
-        }
+        let game = scan_game_directory(&game_dir).expect("Hogwarts Legacy must scan");
+        assert_eq!(game.api, "DirectX 12", "Hogwarts Legacy must resolve to DirectX 12");
+        assert!(
+            game.has_frame_generation,
+            "Hogwarts Legacy ships nvngx_dlssg.dll/sl.dlss_g.dll under Engine/Plugins/Runtime/Nvidia/Streamline, \
+             which the deep vendor FG scan must find even though it's far beyond the main walk's max_depth(5)"
+        );
+        assert!(
+            game.dlss_version.is_some(),
+            "Hogwarts Legacy ships nvngx_dlss.dll under Engine/Plugins/Runtime/Nvidia/DLSS, which the deep \
+             vendor scan must also find for Super Resolution even when there's no shallow copy left after a patch"
+        );
     }
 
     #[test]
     fn test_kingdom_rush_love_engine_detected_as_opengl_real() {
-        let game_dir = Path::new(r"G:\SteamLibrary\steamapps\common\Kingdom Rush");
-        if game_dir.is_dir() {
-            let game = scan_game_directory(game_dir).expect("Kingdom Rush must scan");
-            assert_eq!(
-                game.api, "OpenGL",
-                "Kingdom Rush is a LOVE (love2d.org) game; SDL2 is its real renderer but is filtered as \
-                 middleware, so love.dll presence must drive detection to OpenGL instead of Undetected"
+        let Ok(game_dir_str) = std::env::var("DLSS_STUDIO_TEST_KINGDOM_RUSH_DIR") else { return; };
+        let game_dir = PathBuf::from(game_dir_str);
+        if !game_dir.is_dir() {
+            return;
+        }
+
+        let game = scan_game_directory(&game_dir).expect("Kingdom Rush must scan");
+        assert_eq!(
+            game.api, "OpenGL",
+            "Kingdom Rush is a LOVE (love2d.org) game; SDL2 is its real renderer but is filtered as \
+             middleware, so love.dll presence must drive detection to OpenGL instead of Undetected"
+        );
+    }
+
+    #[test]
+    fn test_rdr2_legacy_d3d9_import_corroborated_by_markers_real() {
+        let Ok(game_dir_str) = std::env::var("DLSS_STUDIO_TEST_RDR2_DIR") else { return; };
+        let game_dir = PathBuf::from(game_dir_str);
+        if !game_dir.is_dir() {
+            return;
+        }
+
+        let exe = game_dir.join("RDR2.exe");
+        if exe.is_file() {
+            let pe = inspect_pe(&exe).expect("RDR2.exe must parse as a valid PE");
+            assert!(
+                pe.imports.iter().any(|i| i == "d3d9.dll"),
+                "RDR2.exe statically imports d3d9.dll as a vestigial/legacy link, not its actual renderer"
+            );
+            let api = detect_api(&exe, &pe.imports).expect("RDR2.exe must detect an API");
+            assert_ne!(
+                api, "DirectX 9",
+                "RDR2 only renders via DirectX 12/Vulkan (loaded via runtime LoadLibrary, invisible to any \
+                 import table); the incidental static d3d9.dll import must not win over marker evidence"
             );
         }
     }
@@ -2886,6 +3020,56 @@ mod tests {
         assert_eq!(detect_api(&exe, &["dxcompiler.dll".into(), "renderer.dll".into()]).as_deref(), Some("Vulkan"));
         assert_eq!(detect_api(&exe, &["vulkan-1.dll".into()]).as_deref(), Some("Vulkan"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn bundled_jre_tools_are_never_treated_as_game_candidates() {
+        // Regression for 3DMark: it bundles a full JRE to run its own UI/tooling. Java's own
+        // awt.dll genuinely contains a "Direct3DCreate9" marker (Java2D's real D3D9 pipeline),
+        // completely unrelated to whatever java.exe was launched for in this context. Without
+        // excluding the jre/ folder, every JRE utility exe (java.exe, keytool.exe, ...) picks
+        // up that incidental sibling evidence and gets mislabeled as a DirectX 9 "game".
+        let dir = std::env::temp_dir().join(format!("test_jre_exclusion_{}", std::process::id()));
+        let jre_bin = dir.join("jre").join("bin");
+        fs::create_dir_all(&jre_bin).unwrap();
+
+        let real_game = dir.join("Game-Win64-Shipping.exe");
+        fs::write(&real_game, graphics_pe_fixture(b"D3D12CreateDevice\0")).unwrap();
+
+        fs::write(jre_bin.join("java.exe"), b"MZ dummy 64-bit exe").unwrap();
+        fs::write(jre_bin.join("awt.dll"), graphics_pe_fixture(b"Direct3DCreate9\0")).unwrap();
+
+        let g = scan_game_directory(&dir).expect("must scan");
+        assert_eq!(g.api, "DirectX 12", "The real game exe must still be chosen and correctly detected");
+        assert!(
+            !g.available_exes.iter().any(|e| e.name == "java.exe"),
+            "Bundled JRE executables must never appear as game candidates"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn angle_libraries_bundled_for_an_embedded_browser_are_not_renderer_evidence() {
+        // Regression for 3DMark: its CEF-based UI shell bundles libEGL.dll/libGLESv2.dll
+        // (Google ANGLE) purely to render its own embedded browser chrome, not to run any
+        // benchmark. Genuine renderer evidence elsewhere in the same folder (e.g. NVIDIA
+        // Streamline's sl.common.dll) must win instead of ANGLE's incidental D3D9 support.
+        let dir = std::env::temp_dir().join(format!("test_angle_cef_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("Launcher.exe");
+        fs::write(&exe, b"MZ launcher stub").unwrap();
+
+        fs::write(dir.join("libglesv2.dll"), graphics_pe_fixture(b"Direct3DCreate9\0")).unwrap();
+        fs::write(dir.join("sl.common.dll"), graphics_pe_fixture(b"D3D12CreateDevice\0")).unwrap();
+
+        assert_eq!(
+            detect_sibling_api(&dir).as_deref(),
+            Some("DirectX 12"),
+            "ANGLE's incidental D3D9 support must not shadow genuine DirectX 12 evidence"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

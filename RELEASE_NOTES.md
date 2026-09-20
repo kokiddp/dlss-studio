@@ -15,8 +15,11 @@
 ### Graphics API detection fixes
 
 - Detect DirectX 12 via delay-load imports (e.g. Hogwarts Legacy, which statically imports `d3d11.dll` but only delay-loads `d3d12.dll` for its runtime RHI switch).
-- Recognize native Frame Generation DLLs shipped deep under `Engine/Plugins/Runtime/**` (Nvidia Streamline), previously invisible to the scan's depth limit.
-- Recognize LOVE (love2d.org) engine games (e.g. Kingdom Rush) as OpenGL instead of leaving them Undetected.
+- Recognize native Frame Generation and Super Resolution DLLs shipped deep under `Engine/Plugins/Runtime/**` (Nvidia Streamline/DLSS), previously invisible to the scan's depth limit — including titles where a patch removed the shallow copy entirely (e.g. Hogwarts Legacy's DLSS detection after an update).
+- Recognize LOVE (love2d.org) engine games (e.g. Kingdom Rush and its sequels) as OpenGL instead of leaving them Undetected.
+- Corroborate a legacy DirectX 9 static import (e.g. Red Dead Redemption 2's vestigial `d3d9.dll` link) against marker evidence instead of trusting it outright, while still trusting an exe explicitly named for its API (e.g. Sims 4's dedicated `TS4_DX9_x64.exe`) unconditionally.
+- Stop excluding standalone benchmark titles whose own exe name contains "benchmark" (e.g. Bright Memory Infinite Benchmark was previously invisible to the scanner entirely); deprioritize instead of hard-excluding so a real game exe still wins when both exist in the same folder.
+- Exclude bundled JRE/JDK runtimes from candidate scanning and treat ANGLE (`libEGL`/`libGLESv2`) as CEF-adjacent middleware, fixing false DirectX 9 results caused by incidental evidence in an unrelated bundled Java runtime or an embedded browser UI (e.g. 3DMark).
 
 > **Route advisory engine, high-contrast incompatibility warnings, unrestricted force override deployment, automatic deployment state reflection, and intelligent optimal path selection, plus window drag fixes, theme polish, and complete multilingual translation coverage.**
 
